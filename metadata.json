@@ -1,0 +1,5 @@
+{
+  "name": "HTML Paste & Preview",
+  "description": "A mobile-first iOS-centric app to paste, preview, and save HTML/JS/React snippets from LLMs.",
+  "requestFramePermissions": []
+}
