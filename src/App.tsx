@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Plus, Folder, Play, Save, Trash2, ChevronLeft, FileCode2, Monitor, Smartphone, Download, Sun, Moon, ChevronRight, Sparkles, Loader2, Wand2, Bug, MessageSquare, Undo, Redo, Terminal, Copy, Check } from 'lucide-react';
+import { Plus, Folder, Play, Save, Trash2, ChevronLeft, FileCode2, Monitor, Smartphone, Download, Sun, Moon, ChevronRight, Sparkles, Loader2, Wand2, Bug, MessageSquare, Undo, Redo, Terminal, Copy, Check, AlignLeft, HelpCircle, TestTube, Upload } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getSnippets, saveSnippet, deleteSnippet, Snippet } from './store';
 import { jsPDF } from 'jspdf';
@@ -46,6 +46,31 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
   const [history, setHistory] = useState<string[]>(['']);
   const [historyIndex, setHistoryIndex] = useState<number>(0);
   const skipHistoryRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result;
+      if (typeof text === 'string') {
+        setContent(text);
+        setDebouncedContent(text);
+        if (!title.trim() && !isManuallyEditedTitle) {
+          setTitle(file.name);
+          setIsManuallyEditedTitle(true);
+        }
+      }
+    };
+    reader.readAsText(file);
+    
+    // Reset the input so the same file can be selected again if needed
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
 
   useEffect(() => {
     if (snippetToEdit) {
@@ -179,7 +204,7 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
     return () => { isMounted = false; };
   }, [debouncedContent, isManuallyEditedTitle, snippetToEdit, existingTitles]);
 
-  const handleAiAction = async (action: 'optimize' | 'fix' | 'comments') => {
+  const handleAiAction = async (action: 'optimize' | 'fix' | 'comments' | 'format' | 'explain' | 'tests') => {
     if (!content.trim()) return;
     setIsAiProcessing(true);
     setAiAction(action);
@@ -192,6 +217,12 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
         prompt = `Fix any bugs, syntax errors, or logical issues in the following web code. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
       } else if (action === 'comments') {
         prompt = `Add helpful, concise comments explaining the following web code. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+      } else if (action === 'format') {
+        prompt = `Format the following web code with proper indentation and consistent style. Additionally, enhance its user interface, appearance, and formatting by improving CSS properties like self padding, UI colors, color schemes, font sizes, relative placement, and absolute placement of elements to make it look modern and beautiful. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+      } else if (action === 'explain') {
+        prompt = `Explain the following web code. Instead of just a code comment, prepend your explanation as a beautifully styled, absolutely positioned HTML overlay or card (using nice UI colors, color schemes, font sizes, self padding, and relative/absolute placement) that visually explains the code to the user directly on the page. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+      } else if (action === 'tests') {
+        prompt = `Generate tests for the following web code. Append the tests to the bottom of the code, and build a visually appealing test runner UI (using absolute placement, nice UI colors, color schemes, font sizes, and self padding) to display the test results directly on the page instead of just the console. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
       }
 
       const response = await ai.models.generateContent({
@@ -332,6 +363,18 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
             {isAiProcessing && aiAction === 'comments' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MessageSquare className="w-3.5 h-3.5" />}
             Add Comments
           </button>
+          <button onClick={() => handleAiAction('format')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-[#AF52DE] dark:text-[#BF5AF2] shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-50">
+            {isAiProcessing && aiAction === 'format' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <AlignLeft className="w-3.5 h-3.5" />}
+            Format
+          </button>
+          <button onClick={() => handleAiAction('explain')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-[#5856D6] dark:text-[#5E5CE6] shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-50">
+            {isAiProcessing && aiAction === 'explain' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <HelpCircle className="w-3.5 h-3.5" />}
+            Explain
+          </button>
+          <button onClick={() => handleAiAction('tests')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-[#FF2D55] dark:text-[#FF375F] shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-50">
+            {isAiProcessing && aiAction === 'tests' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <TestTube className="w-3.5 h-3.5" />}
+            Tests
+          </button>
           
           <div className="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-1 flex-shrink-0"></div>
           
@@ -341,6 +384,20 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
           <button onClick={handleRedo} disabled={historyIndex >= history.length - 1} className="flex-shrink-0 p-1.5 rounded-lg text-gray-500 hover:bg-gray-200 dark:hover:bg-[#38383A] disabled:opacity-30 transition-colors" title="Redo">
             <Redo className="w-4 h-4" />
           </button>
+
+          <div className="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-1 flex-shrink-0"></div>
+
+          <button onClick={() => fileInputRef.current?.click()} className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-gray-700 dark:text-gray-300 shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all" title="Upload File">
+            <Upload className="w-3.5 h-3.5" />
+            Upload
+          </button>
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileUpload}
+            className="hidden"
+            accept=".html,.css,.js,.ts,.jsx,.tsx,.txt,.json,.md,.xml,.svg"
+          />
 
           <div className="flex-1 min-w-[20px]"></div>
           {lastSaved && (
