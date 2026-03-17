@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c512" width="512" height="512"></canvas>
+<canvas id="c192" width="192" height="192"></canvas>
+<script>
+function drawIcon(ctx, size) {
+  const s = size / 512;
+
+  // Background with subtle gradient
+  const bg = ctx.createLinearGradient(0, 0, size, size);
+  bg.addColorStop(0, '#1a1a2e');
+  bg.addColorStop(1, '#16213e');
+  ctx.fillStyle = bg;
+
+  // Rounded rect (for maskable, fill full)
+  ctx.beginPath();
+  ctx.rect(0, 0, size, size);
+  ctx.fill();
+
+  // Subtle inner glow
+  const glow = ctx.createRadialGradient(size*0.3, size*0.3, 0, size*0.5, size*0.5, size*0.7);
+  glow.addColorStop(0, 'rgba(99, 102, 241, 0.15)');
+  glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, size, size);
+
+  // Code bracket: < >
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 36 * s;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // Left bracket <
+  ctx.beginPath();
+  ctx.moveTo(200*s, 170*s);
+  ctx.lineTo(110*s, 256*s);
+  ctx.lineTo(200*s, 342*s);
+  ctx.stroke();
+
+  // Right bracket >
+  ctx.beginPath();
+  ctx.moveTo(312*s, 170*s);
+  ctx.lineTo(402*s, 256*s);
+  ctx.lineTo(312*s, 342*s);
+  ctx.stroke();
+
+  // Slash /
+  ctx.strokeStyle = 'rgba(99, 102, 241, 0.9)';
+  ctx.lineWidth = 28 * s;
+  ctx.beginPath();
+  ctx.moveTo(280*s, 168*s);
+  ctx.lineTo(232*s, 344*s);
+  ctx.stroke();
+}
+
+[512, 192].forEach(size => {
+  const canvas = document.getElementById('c' + size);
+  const ctx = canvas.getContext('2d');
+  drawIcon(ctx, size);
+
+  const link = document.createElement('a');
+  link.download = 'icon-' + size + '.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+});
+</script>
+</body>
+</html>

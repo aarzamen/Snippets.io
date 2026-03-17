@@ -6,46 +6,63 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Snippets" />
-    <title>HTML Paste & Preview</title>
+    <meta name="theme-color" content="#007AFF" />
+    <link rel="manifest" href="/manifest.json" />
+    <title>Snippets</title>
     <script>
-      // Generate high-quality PNG icon on the fly for iOS Home Screen
-      // iOS Safari strictly prefers PNGs for the home screen icon.
+      // Generate high-quality PNG icons for iOS Home Screen + PWA
       (function() {
         const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
           <defs>
             <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#3b82f6" />
-              <stop offset="100%" stop-color="#1d4ed8" />
+              <stop offset="0%" stop-color="#1a1a2e" />
+              <stop offset="100%" stop-color="#16213e" />
             </linearGradient>
-            <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="12" stdDeviation="12" flood-color="#000000" flood-opacity="0.3" />
-            </filter>
+            <radialGradient id="glow" cx="30%" cy="30%" r="70%">
+              <stop offset="0%" stop-color="rgba(99,102,241,0.18)" />
+              <stop offset="100%" stop-color="rgba(0,0,0,0)" />
+            </radialGradient>
           </defs>
-          <rect width="512" height="512" fill="url(#bg)" />
-          <g filter="url(#shadow)">
-            <path d="M 200 166 L 100 256 L 200 346" stroke="white" stroke-width="48" stroke-linecap="round" stroke-linejoin="round" fill="none" />
-            <path d="M 260 176 L 410 256 L 260 336 Z" fill="white" stroke="white" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" />
+          <rect width="512" height="512" fill="url(#bg)" rx="0" />
+          <rect width="512" height="512" fill="url(#glow)" />
+          <g fill="none" stroke="#fff" stroke-width="36" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="200,170 110,256 200,342" />
+            <polyline points="312,170 402,256 312,342" />
           </g>
+          <line x1="280" y1="168" x2="232" y2="344" stroke="rgba(99,102,241,0.9)" stroke-width="28" stroke-linecap="round" />
         </svg>`;
         const img = new Image();
         img.onload = function() {
-          const canvas = document.createElement('canvas');
-          canvas.width = 512;
-          canvas.height = 512;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0);
-          const pngUrl = canvas.toDataURL('image/png');
-          
-          const appleLink = document.createElement('link');
-          appleLink.rel = 'apple-touch-icon';
-          appleLink.href = pngUrl;
-          document.head.appendChild(appleLink);
-          
-          const favicon = document.createElement('link');
-          favicon.rel = 'icon';
-          favicon.type = 'image/png';
-          favicon.href = pngUrl;
-          document.head.appendChild(favicon);
+          [512, 192].forEach(function(size) {
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, size, size);
+            const pngUrl = canvas.toDataURL('image/png');
+
+            if (size === 512) {
+              const appleLink = document.createElement('link');
+              appleLink.rel = 'apple-touch-icon';
+              appleLink.sizes = '512x512';
+              appleLink.href = pngUrl;
+              document.head.appendChild(appleLink);
+
+              const favicon = document.createElement('link');
+              favicon.rel = 'icon';
+              favicon.type = 'image/png';
+              favicon.href = pngUrl;
+              document.head.appendChild(favicon);
+            }
+
+            if (size === 192) {
+              const appleLink = document.createElement('link');
+              appleLink.rel = 'apple-touch-icon';
+              appleLink.sizes = '192x192';
+              appleLink.href = pngUrl;
+              document.head.appendChild(appleLink);
+            }
+          });
         };
         img.src = 'data:image/svg+xml;base64,' + btoa(svg);
       })();
@@ -56,4 +73,3 @@
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-
