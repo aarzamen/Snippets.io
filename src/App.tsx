@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { Plus, Folder, Play, Save, Trash2, ChevronLeft, ChevronDown, FileCode2, Monitor, Smartphone, Download, Sun, Moon, ChevronRight, Sparkles, Loader2, Wand2, Bug, MessageSquare, Undo, Redo, Terminal, Copy, Check, AlignLeft, HelpCircle, TestTube, Upload, LogIn, LogOut, User } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Plus, Folder, Play, Save, Trash2, ChevronLeft, ChevronDown, FileCode2, Monitor, Smartphone, Download, Sun, Moon, ChevronRight, Sparkles, Loader2, Wand2, Bug, MessageSquare, Undo, Redo, Terminal, Copy, Check, AlignLeft, Upload, LogIn, LogOut, Settings, X, Key } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getSnippets, saveSnippet, deleteSnippet, Snippet } from './store';
 import { jsPDF } from 'jspdf';
@@ -10,51 +10,207 @@ import { GoogleGenAI } from '@google/genai';
 import { auth } from './firebase';
 import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 
+// ─── Token Usage Tracking ────────────────────────────────────────────
+interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  model: string;
+  timestamp: number;
+}
+
+interface CumulativeUsage {
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  totalTokens: number;
+  callCount: number;
+}
+
+// ─── API Key Management ──────────────────────────────────────────────
+function getApiKey(): string | null {
+  // 1. Build-time env var (injected by Vite from Cloud Run / AI Studio secrets)
+  const envKey = process.env.GEMINI_API_KEY;
+  if (envKey && envKey !== 'MY_GEMINI_API_KEY' && envKey.length > 10) {
+    return envKey;
+  }
+  // 2. User-provided key in localStorage
+  const stored = localStorage.getItem('gemini_api_key');
+  if (stored && stored.length > 10) {
+    return stored;
+  }
+  return null;
+}
+
+function setStoredApiKey(key: string) {
+  localStorage.setItem('gemini_api_key', key);
+}
+
+function clearStoredApiKey() {
+  localStorage.removeItem('gemini_api_key');
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────
 function injectMobileMeta(html: string) {
-  // Remove any existing viewport tags to prevent conflicts
   let cleanHtml = html.replace(/<meta[^>]*name=["']viewport["'][^>]*>/gi, '');
-  
   const meta = `
 <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-<style>
-  html, body {
-    overscroll-behavior: none !important;
-  }
-</style>
+<style>html, body { overscroll-behavior: none !important; }</style>
 `;
   if (cleanHtml.includes('<head>')) {
     return cleanHtml.replace('<head>', '<head>\n' + meta);
   } else if (cleanHtml.includes('<html>')) {
     return cleanHtml.replace('<html>', '<html>\n<head>\n' + meta + '</head>\n');
-  } else {
-    return meta + cleanHtml;
   }
+  return meta + cleanHtml;
 }
 
-function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, onCancelEdit, theme, toggleTheme, existingTitles, user, onLogin, onLogout }: { snippetToEdit: Snippet | null, onPreview: (c: string) => void, onSave: (t: string, c: string) => void, onUpdate: (s: Snippet) => void, onAutoSave: (s: Snippet) => void, onCancelEdit: () => void, theme: 'light' | 'dark', toggleTheme: () => void, existingTitles: string[], user: FirebaseUser | null, onLogin: () => void, onLogout: () => void }) {
+function injectConsoleInterceptor(html: string) {
+  const script = `
+<script>
+  (function() {
+    const oc = { log: console.log, error: console.error, warn: console.warn, info: console.info, debug: console.debug };
+    function send(type, args) {
+      try {
+        const s = Array.from(args).map(a => {
+          if (a instanceof Error) return a.stack || a.message;
+          if (typeof a === 'object') { try { return JSON.stringify(a, null, 2); } catch(e) { return String(a); } }
+          return String(a);
+        });
+        window.parent.postMessage({ type: 'CONSOLE_LOG', level: type, args: s }, '*');
+      } catch(e) {}
+    }
+    console.log = function() { oc.log.apply(console, arguments); send('log', arguments); };
+    console.error = function() { oc.error.apply(console, arguments); send('error', arguments); };
+    console.warn = function() { oc.warn.apply(console, arguments); send('warn', arguments); };
+    console.info = function() { oc.info.apply(console, arguments); send('info', arguments); };
+    console.debug = function() { oc.debug.apply(console, arguments); send('debug', arguments); };
+    window.addEventListener('error', function(e) { send('error', [e.error ? (e.error.stack || e.error.message) : e.message]); });
+    window.addEventListener('unhandledrejection', function(e) { send('error', ['Unhandled rejection:', e.reason ? (e.reason.stack || e.reason.message || e.reason) : 'Unknown']); });
+  })();
+</script>
+`;
+  if (html.includes('<head>')) return html.replace('<head>', '<head>\n' + script);
+  if (html.includes('<html>')) return html.replace('<html>', '<html>\n<head>\n' + script + '</head>\n');
+  return script + html;
+}
+
+// ─── Token Usage Badge ───────────────────────────────────────────────
+function TokenBadge({ lastUsage, cumulative }: { lastUsage: TokenUsage | null; cumulative: CumulativeUsage }) {
+  if (!lastUsage && cumulative.callCount === 0) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="flex items-center gap-3 px-3 py-1.5 text-[10px] font-mono tracking-wide"
+    >
+      {lastUsage && (
+        <span className="text-indigo-400/70 dark:text-indigo-300/50">
+          last: {lastUsage.promptTokens}→{lastUsage.completionTokens} tok · {lastUsage.model}
+        </span>
+      )}
+      {cumulative.callCount > 0 && (
+        <span className="text-gray-400/60 dark:text-gray-500/50">
+          session: {cumulative.totalTokens.toLocaleString()} tok · {cumulative.callCount} calls
+        </span>
+      )}
+    </motion.div>
+  );
+}
+
+// ─── API Key Modal ───────────────────────────────────────────────────
+function ApiKeyModal({ isOpen, onClose, onSave }: { isOpen: boolean; onClose: () => void; onSave: (key: string) => void }) {
+  const [keyInput, setKeyInput] = useState('');
+  const hasExisting = !!localStorage.getItem('gemini_api_key');
+
+  if (!isOpen) return null;
+
+  return (
+    <>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/40 dark:bg-black/60 z-[80]" onClick={onClose} />
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 20 }}
+        className="fixed inset-x-4 top-1/3 -translate-y-1/3 z-[81] max-w-sm mx-auto"
+      >
+        <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-2xl overflow-hidden border border-gray-200/50 dark:border-[#38383A]">
+          <div className="px-6 pt-6 pb-2">
+            <div className="flex items-center gap-2 mb-1">
+              <Key className="w-5 h-5 text-indigo-500" />
+              <h3 className="text-[17px] font-semibold text-black dark:text-white">Gemini API Key</h3>
+            </div>
+            <p className="text-[13px] text-gray-500 dark:text-gray-400 leading-relaxed mt-1">
+              Get a free key from{' '}
+              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="text-indigo-500 underline">
+                Google AI Studio
+              </a>
+              . Your key stays in this browser only.
+            </p>
+          </div>
+          <div className="px-6 py-4">
+            <input
+              type="password"
+              value={keyInput}
+              onChange={e => setKeyInput(e.target.value)}
+              placeholder="AIza..."
+              autoFocus
+              className="w-full px-4 py-3 bg-[#F2F2F7] dark:bg-black/30 rounded-xl text-[15px] font-mono text-black dark:text-white placeholder-gray-400 dark:placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 border border-gray-200/50 dark:border-[#38383A]"
+            />
+          </div>
+          <div className="flex border-t border-gray-200/50 dark:border-[#38383A]">
+            {hasExisting && (
+              <button
+                onClick={() => { clearStoredApiKey(); onClose(); }}
+                className="flex-1 py-3.5 text-[15px] text-red-500 font-medium border-r border-gray-200/50 dark:border-[#38383A] active:bg-gray-100 dark:active:bg-[#2C2C2E] transition-colors"
+              >
+                Remove
+              </button>
+            )}
+            <button onClick={onClose} className="flex-1 py-3.5 text-[15px] text-gray-500 dark:text-gray-400 font-medium border-r border-gray-200/50 dark:border-[#38383A] active:bg-gray-100 dark:active:bg-[#2C2C2E] transition-colors">
+              Cancel
+            </button>
+            <button
+              onClick={() => { if (keyInput.trim()) { onSave(keyInput.trim()); setKeyInput(''); } }}
+              disabled={!keyInput.trim()}
+              className="flex-1 py-3.5 text-[15px] text-indigo-500 font-semibold active:bg-gray-100 dark:active:bg-[#2C2C2E] transition-colors disabled:opacity-40"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </>
+  );
+}
+
+// ─── PasteScreen ─────────────────────────────────────────────────────
+interface PasteScreenProps {
+  key?: string;
+  snippetToEdit: Snippet | null; onPreview: (c: string) => void; onSave: (t: string, c: string) => void; onUpdate: (s: Snippet) => void; onAutoSave: (s: Snippet) => void; onCancelEdit: () => void; theme: 'light' | 'dark'; toggleTheme: () => void; existingTitles: string[]; user: FirebaseUser | null; onLogin: () => void; onLogout: () => void; onTokenUsage: (u: TokenUsage) => void; apiKeyAvailable: boolean; onRequestApiKey: () => void;
+}
+
+function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, onCancelEdit, theme, toggleTheme, existingTitles, user, onLogin, onLogout, onTokenUsage, apiKeyAvailable, onRequestApiKey }: PasteScreenProps) {
   const [content, setContent] = useState('');
   const [debouncedContent, setDebouncedContent] = useState('');
   const [title, setTitle] = useState('');
   const [isGeneratingTitle, setIsGeneratingTitle] = useState(false);
   const [isManuallyEditedTitle, setIsManuallyEditedTitle] = useState(false);
-  
   const [lastSavedContent, setLastSavedContent] = useState('');
   const [lastSavedTitle, setLastSavedTitle] = useState('');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
-  
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [aiAction, setAiAction] = useState<string | null>(null);
   const [isFormatMenuOpen, setIsFormatMenuOpen] = useState(false);
-
+  const [aiError, setAiError] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>(['']);
   const [historyIndex, setHistoryIndex] = useState<number>(0);
   const skipHistoryRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = (event: import('react').ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target?.result;
@@ -68,11 +224,7 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
       }
     };
     reader.readAsText(file);
-    
-    // Reset the input so the same file can be selected again if needed
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   useEffect(() => {
@@ -82,7 +234,6 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
       setLastSavedContent(snippetToEdit.content);
       setLastSavedTitle(snippetToEdit.title || '');
       setIsManuallyEditedTitle(true);
-      
       setHistory([snippetToEdit.content]);
       setHistoryIndex(0);
       setDebouncedContent(snippetToEdit.content);
@@ -96,27 +247,15 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
           setContent(draftContent);
           setTitle(parsed.title || '');
           if (parsed.title) setIsManuallyEditedTitle(true);
-          
           setHistory([draftContent]);
           setHistoryIndex(0);
           setDebouncedContent(draftContent);
           skipHistoryRef.current = true;
-        } catch (e) {
-          setContent('');
-          setTitle('');
-          setHistory(['']);
-          setHistoryIndex(0);
-          setDebouncedContent('');
-          skipHistoryRef.current = true;
+        } catch {
+          setContent(''); setTitle(''); setHistory(['']); setHistoryIndex(0); setDebouncedContent(''); skipHistoryRef.current = true;
         }
       } else {
-        setContent('');
-        setTitle('');
-        setIsManuallyEditedTitle(false);
-        setHistory(['']);
-        setHistoryIndex(0);
-        setDebouncedContent('');
-        skipHistoryRef.current = true;
+        setContent(''); setTitle(''); setIsManuallyEditedTitle(false); setHistory(['']); setHistoryIndex(0); setDebouncedContent(''); skipHistoryRef.current = true;
       }
     }
   }, [snippetToEdit]);
@@ -127,10 +266,7 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
   }, [content]);
 
   useEffect(() => {
-    if (skipHistoryRef.current) {
-      skipHistoryRef.current = false;
-      return;
-    }
+    if (skipHistoryRef.current) { skipHistoryRef.current = false; return; }
     if (debouncedContent !== history[historyIndex]) {
       const newHistory = history.slice(0, historyIndex + 1);
       newHistory.push(debouncedContent);
@@ -138,7 +274,7 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
       setHistory(newHistory);
       setHistoryIndex(newHistory.length - 1);
     }
-  }, [debouncedContent, history, historyIndex]);
+  }, [debouncedContent]);
 
   // Auto-save draft for new snippets
   useEffect(() => {
@@ -166,53 +302,57 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
   }, [content, title, snippetToEdit, lastSavedContent, lastSavedTitle, onAutoSave]);
 
   useEffect(() => {
-    if (!content.trim() && !snippetToEdit) {
-      setIsManuallyEditedTitle(false);
-      setTitle('');
-    }
+    if (!content.trim() && !snippetToEdit) { setIsManuallyEditedTitle(false); setTitle(''); }
   }, [content, snippetToEdit]);
 
+  // Auto-title generation
   useEffect(() => {
     if (!debouncedContent.trim() || isManuallyEditedTitle || snippetToEdit) return;
+    const apiKey = getApiKey();
+    if (!apiKey) return;
 
     let isMounted = true;
     const generateTitle = async () => {
       setIsGeneratingTitle(true);
       try {
-        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-        const prompt = `Generate a brief, descriptive title (2-5 words) for the following web code snippet. 
-        Do not use quotes. Do not use markdown.
-        It must be unique and NOT be any of the following existing titles: ${existingTitles.join(', ')}.
-        
-        Code:
-        ${debouncedContent.substring(0, 3000)}`;
-        
-        const response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: prompt,
-        });
-        
+        const ai = new GoogleGenAI({ apiKey });
+        const prompt = `Generate a brief, descriptive title (2-5 words) for the following web code snippet. Do not use quotes or markdown. It must be unique and NOT be any of: ${existingTitles.join(', ')}.\n\nCode:\n${debouncedContent.substring(0, 3000)}`;
+        const response = await ai.models.generateContent({ model: 'gemini-2.0-flash-lite', contents: prompt });
         if (isMounted && response.text) {
           setTitle(response.text.trim().replace(/^["']|["']$/g, ''));
         }
-      } catch (error) {
-        console.error("Failed to generate title:", error);
+        // Track token usage from response
+        if (response.usageMetadata) {
+          onTokenUsage({
+            promptTokens: response.usageMetadata.promptTokenCount || 0,
+            completionTokens: response.usageMetadata.candidatesTokenCount || 0,
+            totalTokens: response.usageMetadata.totalTokenCount || 0,
+            model: 'gemini-2.0-flash-lite',
+            timestamp: Date.now(),
+          });
+        }
+      } catch (error: any) {
+        console.error('Title generation failed:', error);
       } finally {
         if (isMounted) setIsGeneratingTitle(false);
       }
     };
-    
     generateTitle();
-    
     return () => { isMounted = false; };
   }, [debouncedContent, isManuallyEditedTitle, snippetToEdit, existingTitles]);
 
-  const handleAiAction = async (action: 'optimize' | 'fix' | 'comments' | 'format' | 'explain' | 'tests', framework?: string) => {
+  const handleAiAction = async (action: 'optimize' | 'fix' | 'comments' | 'format', framework?: string) => {
     if (!content.trim()) return;
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      onRequestApiKey();
+      return;
+    }
     setIsAiProcessing(true);
     setAiAction(framework ? `format-${framework}` : action);
+    setAiError(null);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey });
       let prompt = '';
       if (action === 'optimize') {
         prompt = `Optimize the following web code for performance, readability, and best practices. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
@@ -222,52 +362,53 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
         prompt = `Add helpful, concise comments explaining the following web code. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
       } else if (action === 'format') {
         if (framework) {
-          prompt = `Format the following web code with proper indentation and consistent style. Additionally, enhance its user interface, appearance, and formatting by applying ${framework} classes and best practices. Make it look modern, beautiful, and fully responsive using ${framework}. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+          prompt = `Format the following web code with proper indentation. Enhance its UI using ${framework} classes and best practices for a modern, responsive look. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
         } else {
-          prompt = `Format the following web code with proper indentation and consistent style. Additionally, enhance its user interface, appearance, and formatting by improving CSS properties like self padding, UI colors, color schemes, font sizes, relative placement, and absolute placement of elements to make it look modern and beautiful. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+          prompt = `Format the following web code with proper indentation and consistent style. Improve CSS for a modern, clean look. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
         }
-      } else if (action === 'explain') {
-        prompt = `Explain the following web code. Instead of just a code comment, prepend your explanation as a beautifully styled, absolutely positioned HTML overlay or card (using nice UI colors, color schemes, font sizes, self padding, and relative/absolute placement) that visually explains the code to the user directly on the page. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
-      } else if (action === 'tests') {
-        prompt = `Generate tests for the following web code. Append the tests to the bottom of the code, and build a visually appealing test runner UI (using absolute placement, nice UI colors, color schemes, font sizes, and self padding) to display the test results directly on the page instead of just the console. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
       }
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-lite-preview',
-        contents: prompt,
-      });
+      const response = await ai.models.generateContent({ model: 'gemini-2.0-flash-lite', contents: prompt });
+
+      // Track token usage
+      if (response.usageMetadata) {
+        onTokenUsage({
+          promptTokens: response.usageMetadata.promptTokenCount || 0,
+          completionTokens: response.usageMetadata.candidatesTokenCount || 0,
+          totalTokens: response.usageMetadata.totalTokenCount || 0,
+          model: 'gemini-2.0-flash-lite',
+          timestamp: Date.now(),
+        });
+      }
 
       if (response.text) {
         let newContent = response.text.trim();
-        if (newContent.startsWith('\`\`\`')) {
+        if (newContent.startsWith('```')) {
           const lines = newContent.split('\n');
-          if (lines[0].startsWith('\`\`\`')) lines.shift();
-          if (lines[lines.length - 1].startsWith('\`\`\`')) lines.pop();
+          if (lines[0].startsWith('```')) lines.shift();
+          if (lines[lines.length - 1].startsWith('```')) lines.pop();
           newContent = lines.join('\n');
         }
-        
-        if (content !== history[historyIndex]) {
-          const newHistory = history.slice(0, historyIndex + 1);
-          newHistory.push(content);
-          newHistory.push(newContent);
-          if (newHistory.length > 50) newHistory.splice(0, newHistory.length - 50);
-          setHistory(newHistory);
-          setHistoryIndex(newHistory.length - 1);
-        } else {
-          const newHistory = history.slice(0, historyIndex + 1);
-          newHistory.push(newContent);
-          if (newHistory.length > 50) newHistory.shift();
-          setHistory(newHistory);
-          setHistoryIndex(newHistory.length - 1);
-        }
-        
+        const newHistory = history.slice(0, historyIndex + 1);
+        if (content !== history[historyIndex]) newHistory.push(content);
+        newHistory.push(newContent);
+        if (newHistory.length > 50) newHistory.splice(0, newHistory.length - 50);
+        setHistory(newHistory);
+        setHistoryIndex(newHistory.length - 1);
         skipHistoryRef.current = true;
         setContent(newContent);
         setDebouncedContent(newContent);
       }
-    } catch (error) {
-      console.error("AI action failed:", error);
-      alert("Failed to process code with AI.");
+    } catch (error: any) {
+      console.error('AI action failed:', error);
+      const msg = error?.message || String(error);
+      if (msg.includes('API key') || msg.includes('401') || msg.includes('403')) {
+        setAiError('Invalid API key. Check settings.');
+      } else if (msg.includes('429') || msg.includes('quota')) {
+        setAiError('Rate limited. Try again shortly.');
+      } else {
+        setAiError('AI request failed. Check your API key.');
+      }
     } finally {
       setIsAiProcessing(false);
       setAiAction(null);
@@ -281,9 +422,8 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
       setDebouncedContent(history[historyIndex]);
     } else if (historyIndex > 0) {
       skipHistoryRef.current = true;
-      const prevContent = history[historyIndex - 1];
-      setContent(prevContent);
-      setDebouncedContent(prevContent);
+      setContent(history[historyIndex - 1]);
+      setDebouncedContent(history[historyIndex - 1]);
       setHistoryIndex(historyIndex - 1);
     }
   };
@@ -291,9 +431,8 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
   const handleRedo = () => {
     if (historyIndex < history.length - 1) {
       skipHistoryRef.current = true;
-      const nextContent = history[historyIndex + 1];
-      setContent(nextContent);
-      setDebouncedContent(nextContent);
+      setContent(history[historyIndex + 1]);
+      setDebouncedContent(history[historyIndex + 1]);
       setHistoryIndex(historyIndex + 1);
     }
   };
@@ -304,9 +443,7 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
       onUpdate({ ...snippetToEdit, title, content });
     } else {
       onSave(title, content);
-      setContent('');
-      setTitle('');
-      setIsManuallyEditedTitle(false);
+      setContent(''); setTitle(''); setIsManuallyEditedTitle(false);
       localStorage.removeItem('snippet_draft');
       setLastSaved(null);
     }
@@ -319,6 +456,7 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
       exit={{ opacity: 0, x: -20 }}
       className="flex-1 flex flex-col p-4 pt-safe pb-32 overflow-y-auto"
     >
+      {/* Header */}
       <div className="flex items-center justify-between mt-4 mb-6">
         <div className="flex items-center gap-2">
           {snippetToEdit && (
@@ -327,170 +465,172 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
             </button>
           )}
           <h1 className="text-[34px] font-bold text-black dark:text-white tracking-tight">
-            {snippetToEdit ? 'Edit Snippet' : 'New Snippet'}
+            {snippetToEdit ? 'Edit' : 'New'}
           </h1>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          {!apiKeyAvailable && (
+            <button onClick={onRequestApiKey} className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/30 rounded-full active:scale-95 transition-transform">
+              <Key className="w-3 h-3" />
+              Add Key
+            </button>
+          )}
           {user ? (
             <div className="flex items-center gap-2">
-              {user.photoURL && <img src={user.photoURL} alt="Profile" className="w-8 h-8 rounded-full border border-gray-200 dark:border-gray-700" referrerPolicy="no-referrer" />}
-              <button onClick={onLogout} className="p-2 text-gray-500 dark:text-gray-400 bg-gray-200/50 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform" title="Sign Out">
-                <LogOut className="w-5 h-5" />
+              {user.photoURL && <img src={user.photoURL} alt="" className="w-8 h-8 rounded-full border border-gray-200/80 dark:border-[#38383A]" referrerPolicy="no-referrer" />}
+              <button onClick={onLogout} className="p-2 text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform" title="Sign Out">
+                <LogOut className="w-4.5 h-4.5" />
               </button>
             </div>
           ) : (
-            <button onClick={onLogin} className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-[#007AFF] dark:bg-[#0A84FF] rounded-full active:scale-95 transition-transform" title="Sign In with Google">
-              <LogIn className="w-4 h-4" />
+            <button onClick={onLogin} className="flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-semibold text-white bg-[#007AFF] dark:bg-[#0A84FF] rounded-full active:scale-95 transition-transform">
+              <LogIn className="w-3.5 h-3.5" />
               Sign In
             </button>
           )}
-          <button onClick={toggleTheme} className="p-2 text-gray-500 dark:text-gray-400 bg-gray-200/50 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform">
-            {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+          <button onClick={toggleTheme} className="p-2 text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform">
+            {theme === 'dark' ? <Sun className="w-4.5 h-4.5" /> : <Moon className="w-4.5 h-4.5" />}
           </button>
         </div>
       </div>
 
-      <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-sm overflow-hidden mb-6 border border-gray-200/50 dark:border-[#38383A] flex-shrink-0 flex flex-col">
-        <div className="relative flex items-center border-b border-gray-200/50 dark:border-[#38383A]">
+      {/* Editor Card */}
+      <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-sm overflow-hidden mb-4 border border-gray-200/30 dark:border-[#2C2C2E] flex-shrink-0 flex flex-col">
+        {/* Title Input */}
+        <div className="relative flex items-center border-b border-gray-100 dark:border-[#2C2C2E]">
           <input
             type="text"
-            placeholder="Title (optional)"
+            placeholder="Title"
             value={title}
-            onChange={e => {
-              setTitle(e.target.value);
-              setIsManuallyEditedTitle(true);
-            }}
-            className="w-full px-4 py-3.5 text-[17px] focus:outline-none placeholder-gray-400 dark:placeholder-gray-500 bg-transparent dark:text-white pr-10"
+            onChange={e => { setTitle(e.target.value); setIsManuallyEditedTitle(true); }}
+            className="w-full px-4 py-3 text-[17px] font-medium focus:outline-none placeholder-gray-300 dark:placeholder-gray-600 bg-transparent dark:text-white pr-10"
           />
           <div className="absolute right-3 flex items-center pointer-events-none">
             {isGeneratingTitle ? (
-              <Loader2 className="w-5 h-5 text-[#007AFF] dark:text-[#0A84FF] animate-spin" />
+              <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />
             ) : (!isManuallyEditedTitle && title && !snippetToEdit) ? (
-              <Sparkles className="w-5 h-5 text-[#007AFF] dark:text-[#0A84FF]" />
+              <Sparkles className="w-4 h-4 text-indigo-400" />
             ) : null}
           </div>
         </div>
-        
-        <div className="flex items-center gap-2 px-4 py-2 bg-[#F2F2F7]/50 dark:bg-black/20 border-b border-gray-200/50 dark:border-[#38383A] overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-          <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mr-1 flex-shrink-0">AI Tools</span>
-          <button onClick={() => handleAiAction('optimize')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-[#007AFF] dark:text-[#0A84FF] shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-50">
-            {isAiProcessing && aiAction === 'optimize' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+
+        {/* AI Toolbar */}
+        <div className="flex items-center gap-1.5 px-3 py-2 bg-gray-50/80 dark:bg-black/20 border-b border-gray-100 dark:border-[#2C2C2E] overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+          <button onClick={() => handleAiAction('optimize')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[11px] font-semibold text-indigo-500 dark:text-indigo-400 shadow-sm border border-gray-100 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-40">
+            {isAiProcessing && aiAction === 'optimize' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
             Optimize
           </button>
-          <button onClick={() => handleAiAction('fix')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-[#FF9500] dark:text-[#FF9F0A] shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-50">
-            {isAiProcessing && aiAction === 'fix' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bug className="w-3.5 h-3.5" />}
+          <button onClick={() => handleAiAction('fix')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[11px] font-semibold text-amber-500 dark:text-amber-400 shadow-sm border border-gray-100 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-40">
+            {isAiProcessing && aiAction === 'fix' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bug className="w-3 h-3" />}
             Fix Bugs
           </button>
-          <button onClick={() => handleAiAction('comments')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-[#34C759] dark:text-[#32D74B] shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-50">
-            {isAiProcessing && aiAction === 'comments' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MessageSquare className="w-3.5 h-3.5" />}
-            Add Comments
+          <button onClick={() => handleAiAction('comments')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[11px] font-semibold text-emerald-500 dark:text-emerald-400 shadow-sm border border-gray-100 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-40">
+            {isAiProcessing && aiAction === 'comments' ? <Loader2 className="w-3 h-3 animate-spin" /> : <MessageSquare className="w-3 h-3" />}
+            Comments
           </button>
+
+          {/* Format dropdown */}
           <div className="relative flex-shrink-0">
-            <button onClick={() => setIsFormatMenuOpen(!isFormatMenuOpen)} disabled={isAiProcessing || !content.trim()} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-[#AF52DE] dark:text-[#BF5AF2] shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-50">
-              {isAiProcessing && aiAction?.startsWith('format') ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <AlignLeft className="w-3.5 h-3.5" />}
+            <button onClick={() => setIsFormatMenuOpen(!isFormatMenuOpen)} disabled={isAiProcessing || !content.trim()} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[11px] font-semibold text-purple-500 dark:text-purple-400 shadow-sm border border-gray-100 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-40">
+              {isAiProcessing && aiAction?.startsWith('format') ? <Loader2 className="w-3 h-3 animate-spin" /> : <AlignLeft className="w-3 h-3" />}
               Format
-              <ChevronDown className="w-3 h-3 ml-0.5 opacity-70" />
+              <ChevronDown className="w-2.5 h-2.5 opacity-60" />
             </button>
-            
             <AnimatePresence>
               {isFormatMenuOpen && (
                 <>
                   <div className="fixed inset-0 z-10" onClick={() => setIsFormatMenuOpen(false)} />
                   <motion.div
-                    initial={{ opacity: 0, y: 5, scale: 0.95 }}
+                    initial={{ opacity: 0, y: 4, scale: 0.96 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 5, scale: 0.95 }}
-                    transition={{ duration: 0.15 }}
-                    className="absolute top-full left-0 mt-1.5 w-40 bg-white dark:bg-[#2C2C2E] rounded-xl shadow-lg border border-gray-200/50 dark:border-[#38383A] overflow-hidden z-20"
+                    exit={{ opacity: 0, y: 4, scale: 0.96 }}
+                    transition={{ duration: 0.12 }}
+                    className="absolute top-full left-0 mt-1 w-36 bg-white dark:bg-[#2C2C2E] rounded-xl shadow-lg border border-gray-100 dark:border-[#38383A] overflow-hidden z-20"
                   >
-                    <div className="py-1">
+                    {[
+                      { label: 'Standard', fw: undefined, color: '' },
+                      { label: 'Tailwind CSS', fw: 'Tailwind CSS', color: 'text-sky-500' },
+                      { label: 'Bootstrap', fw: 'Bootstrap', color: 'text-violet-500' },
+                    ].map(opt => (
                       <button
-                        onClick={() => { handleAiAction('format'); setIsFormatMenuOpen(false); }}
-                        className="w-full text-left px-3 py-2 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-[#38383A] transition-colors"
+                        key={opt.label}
+                        onClick={() => { handleAiAction('format', opt.fw); setIsFormatMenuOpen(false); }}
+                        className={`w-full text-left px-3 py-2.5 text-[13px] ${opt.color || 'text-gray-700 dark:text-gray-200'} hover:bg-gray-50 dark:hover:bg-[#38383A] transition-colors font-medium`}
                       >
-                        Standard
+                        {opt.label}
                       </button>
-                      <button
-                        onClick={() => { handleAiAction('format', 'Tailwind CSS'); setIsFormatMenuOpen(false); }}
-                        className="w-full text-left px-3 py-2 text-[13px] text-[#38BDF8] hover:bg-gray-100 dark:hover:bg-[#38383A] transition-colors font-medium"
-                      >
-                        Tailwind CSS
-                      </button>
-                      <button
-                        onClick={() => { handleAiAction('format', 'Bootstrap'); setIsFormatMenuOpen(false); }}
-                        className="w-full text-left px-3 py-2 text-[13px] text-[#7952B3] hover:bg-gray-100 dark:hover:bg-[#38383A] transition-colors font-medium"
-                      >
-                        Bootstrap
-                      </button>
-                    </div>
+                    ))}
                   </motion.div>
                 </>
               )}
             </AnimatePresence>
           </div>
-          <button onClick={() => handleAiAction('explain')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-[#5856D6] dark:text-[#5E5CE6] shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-50">
-            {isAiProcessing && aiAction === 'explain' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <HelpCircle className="w-3.5 h-3.5" />}
-            Explain
+
+          <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-0.5 flex-shrink-0" />
+
+          <button onClick={handleUndo} disabled={historyIndex === 0 && content === history[0]} className="flex-shrink-0 p-1.5 rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-[#38383A] disabled:opacity-20 transition-colors" title="Undo">
+            <Undo className="w-3.5 h-3.5" />
           </button>
-          <button onClick={() => handleAiAction('tests')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-[#FF2D55] dark:text-[#FF375F] shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-50">
-            {isAiProcessing && aiAction === 'tests' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <TestTube className="w-3.5 h-3.5" />}
-            Tests
-          </button>
-          
-          <div className="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-1 flex-shrink-0"></div>
-          
-          <button onClick={handleUndo} disabled={historyIndex === 0 && content === history[0]} className="flex-shrink-0 p-1.5 rounded-lg text-gray-500 hover:bg-gray-200 dark:hover:bg-[#38383A] disabled:opacity-30 transition-colors" title="Undo">
-            <Undo className="w-4 h-4" />
-          </button>
-          <button onClick={handleRedo} disabled={historyIndex >= history.length - 1} className="flex-shrink-0 p-1.5 rounded-lg text-gray-500 hover:bg-gray-200 dark:hover:bg-[#38383A] disabled:opacity-30 transition-colors" title="Redo">
-            <Redo className="w-4 h-4" />
+          <button onClick={handleRedo} disabled={historyIndex >= history.length - 1} className="flex-shrink-0 p-1.5 rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-[#38383A] disabled:opacity-20 transition-colors" title="Redo">
+            <Redo className="w-3.5 h-3.5" />
           </button>
 
-          <div className="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-1 flex-shrink-0"></div>
+          <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-0.5 flex-shrink-0" />
 
-          <button onClick={() => fileInputRef.current?.click()} className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-gray-700 dark:text-gray-300 shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all" title="Upload File">
-            <Upload className="w-3.5 h-3.5" />
+          <button onClick={() => fileInputRef.current?.click()} className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[11px] font-semibold text-gray-500 dark:text-gray-400 shadow-sm border border-gray-100 dark:border-[#38383A] active:scale-95 transition-all" title="Upload">
+            <Upload className="w-3 h-3" />
             Upload
           </button>
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            className="hidden"
-            accept=".html,.css,.js,.ts,.jsx,.tsx,.txt,.json,.md,.xml,.svg"
-          />
+          <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".html,.css,.js,.ts,.jsx,.tsx,.txt,.json,.md,.xml,.svg" />
 
-          <div className="flex-1 min-w-[20px]"></div>
+          <div className="flex-1 min-w-[12px]" />
           {lastSaved && (
-            <span className="text-[10px] text-gray-400 dark:text-gray-500 whitespace-nowrap flex-shrink-0">
-              Auto-saved {lastSaved.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            <span className="text-[9px] text-gray-400 dark:text-gray-600 whitespace-nowrap flex-shrink-0 tabular-nums">
+              {lastSaved.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </span>
           )}
         </div>
 
-        <div className="w-full h-64 overflow-y-auto bg-[#F2F2F7]/50 dark:bg-black/30">
+        {/* AI Error */}
+        <AnimatePresence>
+          {aiError && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="flex items-center justify-between px-4 py-2 bg-red-50 dark:bg-red-900/20 text-[12px] text-red-600 dark:text-red-400">
+                <span>{aiError}</span>
+                <button onClick={() => setAiError(null)} className="ml-2 p-0.5"><X className="w-3 h-3" /></button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Code Editor */}
+        <div className="w-full h-64 overflow-y-auto bg-gray-50/50 dark:bg-black/30">
           <Editor
             value={content}
             onValueChange={code => setContent(code)}
             highlight={code => Prism.highlight(code, Prism.languages.markup, 'html')}
             padding={16}
-            placeholder="Paste HTML/JS code here...&#10;&#10;Tip: Ask the LLM for a single-file HTML with standalone React/Babel if using React."
-            className="min-h-full text-[15px] font-mono text-gray-800 dark:text-gray-200"
+            placeholder="Paste HTML/JS code here..."
+            className="min-h-full text-[14px] font-mono text-gray-800 dark:text-gray-200"
             textareaClassName="focus:outline-none"
-            style={{
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-            }}
+            style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}
           />
         </div>
       </div>
 
+      {/* Live Preview */}
       {debouncedContent.trim() && (
-        <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-sm overflow-hidden mb-6 border border-gray-200/50 dark:border-[#38383A] flex-shrink-0 flex flex-col h-64 relative">
-          <div className="px-4 py-2 bg-[#F2F2F7]/80 dark:bg-[#2C2C2E]/80 border-b border-gray-200/50 dark:border-[#38383A] text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider flex items-center justify-between">
-            <span>Live Preview</span>
-            <span className="flex items-center text-[10px] text-gray-400 dark:text-gray-500 normal-case font-normal">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#34C759] mr-1.5 animate-pulse"></span>
-              Auto-updating
+        <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-sm overflow-hidden mb-4 border border-gray-200/30 dark:border-[#2C2C2E] flex-shrink-0 flex flex-col h-56 relative">
+          <div className="px-4 py-1.5 bg-gray-50/80 dark:bg-[#2C2C2E]/60 border-b border-gray-100 dark:border-[#2C2C2E] text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest flex items-center justify-between">
+            <span>Preview</span>
+            <span className="flex items-center text-[9px] normal-case font-normal tracking-normal">
+              <span className="w-1 h-1 rounded-full bg-emerald-400 mr-1 animate-pulse" />
+              Live
             </span>
           </div>
           <iframe
@@ -502,21 +642,22 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
         </div>
       )}
 
+      {/* Action Buttons */}
       <div className="flex gap-3 mt-auto flex-shrink-0">
         <button
           onClick={() => onPreview(content)}
           disabled={!content.trim()}
-          className="flex-1 bg-[#E5E5EA] dark:bg-[#2C2C2E] text-[#007AFF] dark:text-[#0A84FF] font-semibold py-3.5 rounded-xl disabled:opacity-50 flex items-center justify-center active:scale-[0.98] transition-transform text-[17px]"
+          className="flex-1 bg-gray-100 dark:bg-[#2C2C2E] text-[#007AFF] dark:text-[#0A84FF] font-semibold py-3.5 rounded-2xl disabled:opacity-40 flex items-center justify-center active:scale-[0.98] transition-transform text-[16px]"
         >
-          <Play className="w-5 h-5 mr-2 fill-current" />
+          <Play className="w-4.5 h-4.5 mr-2 fill-current" />
           Preview
         </button>
         <button
           onClick={handleSave}
           disabled={!content.trim()}
-          className="flex-1 bg-[#007AFF] dark:bg-[#0A84FF] text-white font-semibold py-3.5 rounded-xl shadow-sm disabled:opacity-50 flex items-center justify-center active:scale-[0.98] transition-transform text-[17px]"
+          className="flex-1 bg-[#007AFF] dark:bg-[#0A84FF] text-white font-semibold py-3.5 rounded-2xl shadow-sm shadow-blue-500/20 disabled:opacity-40 flex items-center justify-center active:scale-[0.98] transition-transform text-[16px]"
         >
-          <Save className="w-5 h-5 mr-2" />
+          <Save className="w-4.5 h-4.5 mr-2" />
           {snippetToEdit ? 'Update' : 'Save'}
         </button>
       </div>
@@ -524,7 +665,13 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
   );
 }
 
-function LibraryScreen({ snippets, onPreview, onEdit, onDelete, onExport, theme, toggleTheme, user, onLogin, onLogout }: { snippets: Snippet[], onPreview: (c: string) => void, onEdit: (s: Snippet) => void, onDelete: (id: string) => void, onExport: (s: Snippet) => void, theme: 'light' | 'dark', toggleTheme: () => void, user: FirebaseUser | null, onLogin: () => void, onLogout: () => void }) {
+// ─── LibraryScreen ───────────────────────────────────────────────────
+interface LibraryScreenProps {
+  key?: string;
+  snippets: Snippet[]; onPreview: (c: string) => void; onEdit: (s: Snippet) => void; onDelete: (id: string) => void; onExport: (s: Snippet) => void; theme: 'light' | 'dark'; toggleTheme: () => void; user: FirebaseUser | null; onLogin: () => void; onLogout: () => void;
+}
+
+function LibraryScreen({ snippets, onPreview, onEdit, onDelete, onExport, theme, toggleTheme, user, onLogin, onLogout }: LibraryScreenProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const handleCopy = (id: string, content: string) => {
@@ -542,38 +689,38 @@ function LibraryScreen({ snippets, onPreview, onEdit, onDelete, onExport, theme,
     >
       <div className="flex items-center justify-between mt-4 mb-6">
         <h1 className="text-[34px] font-bold text-black dark:text-white tracking-tight">Library</h1>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           {user ? (
             <div className="flex items-center gap-2">
-              {user.photoURL && <img src={user.photoURL} alt="Profile" className="w-8 h-8 rounded-full border border-gray-200 dark:border-gray-700" referrerPolicy="no-referrer" />}
-              <button onClick={onLogout} className="p-2 text-gray-500 dark:text-gray-400 bg-gray-200/50 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform" title="Sign Out">
-                <LogOut className="w-5 h-5" />
+              {user.photoURL && <img src={user.photoURL} alt="" className="w-8 h-8 rounded-full border border-gray-200/80 dark:border-[#38383A]" referrerPolicy="no-referrer" />}
+              <button onClick={onLogout} className="p-2 text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform" title="Sign Out">
+                <LogOut className="w-4.5 h-4.5" />
               </button>
             </div>
           ) : (
-            <button onClick={onLogin} className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-[#007AFF] dark:bg-[#0A84FF] rounded-full active:scale-95 transition-transform" title="Sign In with Google">
-              <LogIn className="w-4 h-4" />
+            <button onClick={onLogin} className="flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-semibold text-white bg-[#007AFF] dark:bg-[#0A84FF] rounded-full active:scale-95 transition-transform">
+              <LogIn className="w-3.5 h-3.5" />
               Sign In
             </button>
           )}
-          <button onClick={toggleTheme} className="p-2 text-gray-500 dark:text-gray-400 bg-gray-200/50 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform">
-            {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+          <button onClick={toggleTheme} className="p-2 text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform">
+            {theme === 'dark' ? <Sun className="w-4.5 h-4.5" /> : <Moon className="w-4.5 h-4.5" />}
           </button>
         </div>
       </div>
 
       {snippets.length === 0 ? (
         <div className="flex flex-col items-center justify-center mt-20 text-gray-400 dark:text-gray-500">
-          <FileCode2 className="w-16 h-16 mb-4 opacity-20" />
-          <p className="text-[17px] font-medium text-gray-500 dark:text-gray-400">No snippets saved</p>
-          <p className="text-[15px] mt-1">Paste and save code to see it here.</p>
+          <FileCode2 className="w-14 h-14 mb-4 opacity-15" />
+          <p className="text-[16px] font-medium text-gray-400 dark:text-gray-500">No snippets yet</p>
+          <p className="text-[14px] mt-1 text-gray-300 dark:text-gray-600">Save code to see it here</p>
         </div>
       ) : (
-        <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-sm overflow-hidden border border-gray-200/50 dark:border-[#38383A]">
+        <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-sm overflow-hidden border border-gray-200/30 dark:border-[#2C2C2E]">
           {snippets.map((snippet, index) => (
-            <div key={snippet.id} className={`flex items-center justify-between p-4 ${index !== snippets.length - 1 ? 'border-b border-gray-200/50 dark:border-[#38383A]' : ''}`}>
-              <div 
-                className="w-16 h-16 rounded-xl overflow-hidden relative bg-white dark:bg-black border border-gray-200/80 dark:border-[#38383A] flex-shrink-0 mr-4 cursor-pointer shadow-sm"
+            <div key={snippet.id} className={`flex items-center justify-between p-3.5 ${index !== snippets.length - 1 ? 'border-b border-gray-100 dark:border-[#2C2C2E]' : ''}`}>
+              <div
+                className="w-14 h-14 rounded-xl overflow-hidden relative bg-white dark:bg-black border border-gray-100 dark:border-[#2C2C2E] flex-shrink-0 mr-3 cursor-pointer"
                 onClick={() => onPreview(snippet.content)}
               >
                 <iframe
@@ -582,53 +729,29 @@ function LibraryScreen({ snippets, onPreview, onEdit, onDelete, onExport, theme,
                   loading="lazy"
                   tabIndex={-1}
                   scrolling="no"
-                  className="absolute top-0 left-0 w-[320px] h-[320px] origin-top-left scale-[0.2] pointer-events-none border-none bg-white dark:bg-black"
+                  className="absolute top-0 left-0 w-[280px] h-[280px] origin-top-left scale-[0.05] pointer-events-none border-none bg-white dark:bg-black"
                 />
-                {/* Invisible overlay to capture clicks and prevent iframe interaction */}
-                <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/0 hover:bg-black/10 dark:hover:bg-white/10 transition-colors">
-                  <Play className="w-6 h-6 text-white opacity-0 hover:opacity-100 drop-shadow-md fill-current" />
-                </div>
+                <div className="absolute inset-0 z-10" />
               </div>
-              <div
-                className="flex-1 min-w-0 pr-2 cursor-pointer"
-                onClick={() => onEdit(snippet)}
-              >
-                <h3 className="text-[17px] font-semibold text-black dark:text-white truncate tracking-tight">
-                  {snippet.title}
-                </h3>
-                <p className="text-[13px] text-gray-500 dark:text-gray-400 truncate mt-0.5">
-                  {new Date(snippet.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} &middot; {(snippet.content.length / 1024).toFixed(1)} KB
+              <div className="flex-1 min-w-0 pr-2 cursor-pointer" onClick={() => onEdit(snippet)}>
+                <h3 className="text-[15px] font-semibold text-black dark:text-white truncate">{snippet.title}</h3>
+                <p className="text-[12px] text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                  {new Date(snippet.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} · {(snippet.content.length / 1024).toFixed(1)}KB
                 </p>
               </div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => onPreview(snippet.content)}
-                  className="p-2 text-[#34C759] dark:text-[#32D74B] bg-[#34C759]/10 dark:bg-[#32D74B]/20 rounded-full active:opacity-70 transition-opacity"
-                  title="Preview"
-                >
+              <div className="flex items-center gap-1">
+                <button onClick={() => onPreview(snippet.content)} className="p-2 text-emerald-500 rounded-full active:opacity-70 transition-opacity" title="Preview">
                   <Play className="w-4 h-4 fill-current" />
                 </button>
-                <button
-                  onClick={() => handleCopy(snippet.id, snippet.content)}
-                  className="p-2 text-[#5856D6] dark:text-[#5E5CE6] bg-[#5856D6]/10 dark:bg-[#5E5CE6]/20 rounded-full active:opacity-70 transition-opacity"
-                  title="Copy Code"
-                >
+                <button onClick={() => handleCopy(snippet.id, snippet.content)} className="p-2 text-indigo-500 rounded-full active:opacity-70 transition-opacity" title="Copy">
                   {copiedId === snippet.id ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                 </button>
-                <button
-                  onClick={() => onExport(snippet)}
-                  className="p-2 text-[#007AFF] dark:text-[#0A84FF] bg-[#E5E5EA] dark:bg-[#2C2C2E] rounded-full active:opacity-70 transition-opacity"
-                  title="Export"
-                >
+                <button onClick={() => onExport(snippet)} className="p-2 text-[#007AFF] dark:text-[#0A84FF] rounded-full active:opacity-70 transition-opacity" title="Export">
                   <Download className="w-4 h-4" />
                 </button>
-                <button
-                  onClick={() => onDelete(snippet.id)}
-                  className="p-2 text-[#FF3B30] dark:text-[#FF453A] bg-[#FF3B30]/10 dark:bg-[#FF453A]/20 rounded-full active:opacity-70 transition-opacity"
-                >
+                <button onClick={() => onDelete(snippet.id)} className="p-2 text-red-400 rounded-full active:opacity-70 transition-opacity" title="Delete">
                   <Trash2 className="w-4 h-4" />
                 </button>
-                <ChevronRight className="w-5 h-5 text-gray-300 dark:text-gray-600 ml-1" />
               </div>
             </div>
           ))}
@@ -638,87 +761,21 @@ function LibraryScreen({ snippets, onPreview, onEdit, onDelete, onExport, theme,
   );
 }
 
-function injectConsoleInterceptor(html: string) {
-  const script = `
-<script>
-  (function() {
-    const originalConsole = {
-      log: console.log,
-      error: console.error,
-      warn: console.warn,
-      info: console.info,
-      debug: console.debug
-    };
-    
-    function sendLog(type, args) {
-      try {
-        const serializedArgs = Array.from(args).map(arg => {
-          if (arg instanceof Error) return arg.stack || arg.message;
-          if (typeof arg === 'object') {
-            try {
-              return JSON.stringify(arg, null, 2);
-            } catch (e) {
-              return String(arg);
-            }
-          }
-          return String(arg);
-        });
-        window.parent.postMessage({ type: 'CONSOLE_LOG', level: type, args: serializedArgs }, '*');
-      } catch (e) {
-        // Ignore serialization errors
-      }
-    }
+// ─── PreviewScreen ───────────────────────────────────────────────────
+interface LogEntry { id: string; level: string; args: string[]; timestamp: number; }
 
-    console.log = function() { originalConsole.log.apply(console, arguments); sendLog('log', arguments); };
-    console.error = function() { originalConsole.error.apply(console, arguments); sendLog('error', arguments); };
-    console.warn = function() { originalConsole.warn.apply(console, arguments); sendLog('warn', arguments); };
-    console.info = function() { originalConsole.info.apply(console, arguments); sendLog('info', arguments); };
-    console.debug = function() { originalConsole.debug.apply(console, arguments); sendLog('debug', arguments); };
-    
-    window.addEventListener('error', function(event) {
-      sendLog('error', [event.error ? (event.error.stack || event.error.message) : event.message]);
-    });
-    
-    window.addEventListener('unhandledrejection', function(event) {
-      sendLog('error', ['Unhandled promise rejection:', event.reason ? (event.reason.stack || event.reason.message || event.reason) : 'Unknown reason']);
-    });
-  })();
-</script>
-`;
-  if (html.includes('<head>')) {
-    return html.replace('<head>', '<head>\n' + script);
-  } else if (html.includes('<html>')) {
-    return html.replace('<html>', '<html>\n<head>\n' + script + '</head>\n');
-  } else {
-    return script + html;
-  }
-}
-
-interface LogEntry {
-  id: string;
-  level: string;
-  args: string[];
-  timestamp: number;
-}
-
-function PreviewScreen({ content, onClose }: { content: string, onClose: () => void }) {
+function PreviewScreen({ content, onClose }: { content: string; onClose: () => void }) {
   const [viewMode, setViewMode] = useState<'portrait' | 'landscape' | 'desktop'>('portrait');
   const [showConsole, setShowConsole] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState<'all' | 'log' | 'warn' | 'error'>('all');
-  
+
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      if (event.data && event.data.type === 'CONSOLE_LOG') {
-        setLogs(prev => [...prev, {
-          id: Math.random().toString(36).substring(2, 9),
-          level: event.data.level,
-          args: event.data.args,
-          timestamp: Date.now()
-        }]);
+      if (event.data?.type === 'CONSOLE_LOG') {
+        setLogs(prev => [...prev, { id: Math.random().toString(36).substring(2, 9), level: event.data.level, args: event.data.args, timestamp: Date.now() }]);
       }
     };
-    
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
@@ -728,52 +785,40 @@ function PreviewScreen({ content, onClose }: { content: string, onClose: () => v
 
   return (
     <div className="flex-1 flex flex-col h-full bg-white dark:bg-black">
-      <div className="flex items-center justify-between px-4 py-3 pt-safe bg-white/80 dark:bg-[#1C1C1E]/80 backdrop-blur-2xl border-b border-gray-200/50 dark:border-[#38383A]/80 shadow-sm z-10">
-        <button onClick={onClose} className="text-[#007AFF] dark:text-[#0A84FF] text-[17px] flex items-center active:opacity-70 transition-opacity w-20">
-          <ChevronLeft className="w-6 h-6 -ml-2" />
+      <div className="flex items-center justify-between px-4 py-2.5 pt-safe bg-white/80 dark:bg-[#1C1C1E]/80 backdrop-blur-2xl border-b border-gray-200/30 dark:border-[#2C2C2E] z-10">
+        <button onClick={onClose} className="text-[#007AFF] dark:text-[#0A84FF] text-[15px] font-medium flex items-center active:opacity-70 transition-opacity w-16">
+          <ChevronLeft className="w-5 h-5 -ml-1" />
           Back
         </button>
-        
-        <div className="flex bg-[#E3E3E8] dark:bg-[#38383A] p-0.5 rounded-[9px]">
-          <button 
-            onClick={() => setViewMode('portrait')}
-            className={`px-3 py-1 rounded-[7px] text-[13px] font-medium flex items-center transition-all ${viewMode === 'portrait' ? 'bg-white dark:bg-[#636366] shadow-sm text-black dark:text-white' : 'text-gray-500 dark:text-gray-300'}`}
-          >
-            <Smartphone className="w-3.5 h-3.5 mr-1.5" />
-            Portrait
-          </button>
-          <button 
-            onClick={() => setViewMode('landscape')}
-            className={`px-3 py-1 rounded-[7px] text-[13px] font-medium flex items-center transition-all ${viewMode === 'landscape' ? 'bg-white dark:bg-[#636366] shadow-sm text-black dark:text-white' : 'text-gray-500 dark:text-gray-300'}`}
-          >
-            <Smartphone className="w-3.5 h-3.5 mr-1.5 -rotate-90" />
-            Landscape
-          </button>
-          <button 
-            onClick={() => setViewMode('desktop')}
-            className={`px-3 py-1 rounded-[7px] text-[13px] font-medium flex items-center transition-all ${viewMode === 'desktop' ? 'bg-white dark:bg-[#636366] shadow-sm text-black dark:text-white' : 'text-gray-500 dark:text-gray-300'}`}
-          >
-            <Monitor className="w-3.5 h-3.5 mr-1.5" />
-            Desktop
-          </button>
+        <div className="flex bg-gray-100 dark:bg-[#2C2C2E] p-0.5 rounded-lg">
+          {(['portrait', 'landscape', 'desktop'] as const).map(mode => (
+            <button
+              key={mode}
+              onClick={() => setViewMode(mode)}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center transition-all ${viewMode === mode ? 'bg-white dark:bg-[#48484A] shadow-sm text-black dark:text-white' : 'text-gray-400 dark:text-gray-500'}`}
+            >
+              {mode === 'portrait' && <Smartphone className="w-3 h-3 mr-1" />}
+              {mode === 'landscape' && <Smartphone className="w-3 h-3 mr-1 -rotate-90" />}
+              {mode === 'desktop' && <Monitor className="w-3 h-3 mr-1" />}
+              {mode.charAt(0).toUpperCase() + mode.slice(1)}
+            </button>
+          ))}
         </div>
-
-        <div className="w-20 flex justify-end">
+        <div className="w-16 flex justify-end">
           <button
             onClick={() => setShowConsole(!showConsole)}
-            className={`p-2 rounded-full transition-colors ${showConsole ? 'bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/20 dark:text-[#0A84FF]' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-[#2C2C2E]'}`}
-            title="Toggle Developer Console"
+            className={`p-1.5 rounded-full transition-colors ${showConsole ? 'bg-indigo-50 text-indigo-500 dark:bg-indigo-500/20 dark:text-indigo-400' : 'text-gray-400 dark:text-gray-500'}`}
           >
-            <Terminal className="w-5 h-5" />
+            <Terminal className="w-4 h-4" />
           </button>
         </div>
       </div>
-      
-      <div className={`flex-1 @container relative ${viewMode === 'desktop' ? 'overflow-auto bg-[#F2F2F7] dark:bg-black p-4 md:p-8' : 'overflow-hidden bg-white dark:bg-black'}`}>
+
+      <div className={`flex-1 @container relative ${viewMode === 'desktop' ? 'overflow-auto bg-gray-50 dark:bg-black p-4 md:p-8' : 'overflow-hidden bg-white dark:bg-black'}`}>
         <div className={`
           ${viewMode === 'portrait' ? 'w-full h-full' : ''}
           ${viewMode === 'landscape' ? 'absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 origin-center rotate-90 w-[100cqh] h-[100cqw]' : ''}
-          ${viewMode === 'desktop' ? 'w-[1024px] min-h-[768px] h-full mx-auto bg-white dark:bg-black shadow-xl border border-gray-200/50 dark:border-[#38383A] rounded-lg overflow-hidden' : ''}
+          ${viewMode === 'desktop' ? 'w-[1024px] min-h-[768px] h-full mx-auto bg-white dark:bg-black shadow-xl border border-gray-200/30 dark:border-[#2C2C2E] rounded-lg overflow-hidden' : ''}
         `}>
           <iframe
             srcDoc={processedContent}
@@ -782,33 +827,31 @@ function PreviewScreen({ content, onClose }: { content: string, onClose: () => v
             title="Preview"
           />
         </div>
-        
+
         {showConsole && (
-          <div className="absolute bottom-0 left-0 right-0 h-1/3 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-xl border-t border-gray-200/50 dark:border-[#38383A]/80 shadow-2xl flex flex-col z-20">
-            <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200/50 dark:border-[#38383A]/80 bg-gray-50/50 dark:bg-[#2C2C2E]/50">
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Console</span>
-                <div className="flex bg-gray-200/50 dark:bg-[#38383A]/50 rounded-md p-0.5">
-                  <button onClick={() => setLogFilter('all')} className={`px-2 py-0.5 text-[10px] uppercase font-medium rounded-sm transition-colors ${logFilter === 'all' ? 'bg-white dark:bg-[#636366] text-black dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}>All</button>
-                  <button onClick={() => setLogFilter('log')} className={`px-2 py-0.5 text-[10px] uppercase font-medium rounded-sm transition-colors ${logFilter === 'log' ? 'bg-white dark:bg-[#636366] text-black dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}>Logs</button>
-                  <button onClick={() => setLogFilter('warn')} className={`px-2 py-0.5 text-[10px] uppercase font-medium rounded-sm transition-colors ${logFilter === 'warn' ? 'bg-white dark:bg-[#636366] text-black dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}>Warn</button>
-                  <button onClick={() => setLogFilter('error')} className={`px-2 py-0.5 text-[10px] uppercase font-medium rounded-sm transition-colors ${logFilter === 'error' ? 'bg-white dark:bg-[#636366] text-black dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}>Error</button>
+          <div className="absolute bottom-0 left-0 right-0 h-1/3 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-xl border-t border-gray-200/30 dark:border-[#2C2C2E] flex flex-col z-20">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-100 dark:border-[#2C2C2E] bg-gray-50/50 dark:bg-[#2C2C2E]/50">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">Console</span>
+                <div className="flex bg-gray-100 dark:bg-[#38383A]/50 rounded p-0.5">
+                  {(['all', 'log', 'warn', 'error'] as const).map(f => (
+                    <button key={f} onClick={() => setLogFilter(f)} className={`px-1.5 py-0.5 text-[9px] uppercase font-semibold rounded transition-colors ${logFilter === f ? 'bg-white dark:bg-[#48484A] text-black dark:text-white shadow-sm' : 'text-gray-400 dark:text-gray-500'}`}>{f}</button>
+                  ))}
                 </div>
               </div>
-              <button onClick={() => setLogs([])} className="text-xs text-[#007AFF] dark:text-[#0A84FF] hover:opacity-80 font-medium">Clear</button>
+              <button onClick={() => setLogs([])} className="text-[11px] text-[#007AFF] dark:text-[#0A84FF] font-medium">Clear</button>
             </div>
-            <div className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-relaxed">
+            <div className="flex-1 overflow-auto p-2 font-mono text-[10px] leading-relaxed">
               {filteredLogs.length === 0 ? (
-                <div className="text-gray-400 dark:text-gray-500 italic p-2">No logs to display...</div>
+                <div className="text-gray-300 dark:text-gray-600 italic p-2">No logs...</div>
               ) : (
                 filteredLogs.map(log => (
-                  <div key={log.id} className={`py-1 px-2 mb-0.5 rounded border-l-2 ${
-                    log.level === 'error' ? 'bg-red-50 dark:bg-red-900/10 text-red-600 dark:text-red-400 border-red-500' :
-                    log.level === 'warn' ? 'bg-yellow-50 dark:bg-yellow-900/10 text-yellow-600 dark:text-yellow-400 border-yellow-500' :
-                    log.level === 'info' ? 'text-blue-600 dark:text-blue-400 border-blue-500' :
-                    'text-gray-800 dark:text-gray-200 border-gray-300 dark:border-gray-600'
+                  <div key={log.id} className={`py-0.5 px-2 mb-0.5 rounded border-l-2 ${
+                    log.level === 'error' ? 'bg-red-50 dark:bg-red-900/10 text-red-500 border-red-400' :
+                    log.level === 'warn' ? 'bg-amber-50 dark:bg-amber-900/10 text-amber-500 border-amber-400' :
+                    'text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600'
                   }`}>
-                    <span className="opacity-50 mr-2">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+                    <span className="opacity-40 mr-1.5">{new Date(log.timestamp).toLocaleTimeString()}</span>
                     {log.args.join(' ')}
                   </div>
                 ))
@@ -821,6 +864,7 @@ function PreviewScreen({ content, onClose }: { content: string, onClose: () => v
   );
 }
 
+// ─── App ─────────────────────────────────────────────────────────────
 export default function App() {
   const [currentTab, setCurrentTab] = useState<'paste' | 'library'>('paste');
   const [editingSnippet, setEditingSnippet] = useState<Snippet | null>(null);
@@ -828,10 +872,26 @@ export default function App() {
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [exportSheet, setExportSheet] = useState<Snippet | null>(null);
-  const [exporting, setExporting] = useState<{ id: string, type: 'html' | 'image' | 'pdf' | 'markdown' } | null>(null);
+  const [exporting, setExporting] = useState<{ id: string; type: 'html' | 'image' | 'pdf' | 'markdown' } | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [apiKeyAvailable, setApiKeyAvailable] = useState(!!getApiKey());
+
+  // Token usage tracking
+  const [lastTokenUsage, setLastTokenUsage] = useState<TokenUsage | null>(null);
+  const [cumulativeUsage, setCumulativeUsage] = useState<CumulativeUsage>({ totalPromptTokens: 0, totalCompletionTokens: 0, totalTokens: 0, callCount: 0 });
+
+  const handleTokenUsage = useCallback((usage: TokenUsage) => {
+    setLastTokenUsage(usage);
+    setCumulativeUsage(prev => ({
+      totalPromptTokens: prev.totalPromptTokens + usage.promptTokens,
+      totalCompletionTokens: prev.totalCompletionTokens + usage.completionTokens,
+      totalTokens: prev.totalTokens + usage.totalTokens,
+      callCount: prev.callCount + 1,
+    }));
+  }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -842,34 +902,22 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (theme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    if (theme === 'dark') document.documentElement.classList.add('dark');
+    else document.documentElement.classList.remove('dark');
   }, [theme]);
 
-  const toggleTheme = () => {
-    setTheme(prev => prev === 'light' ? 'dark' : 'light');
-  };
+  const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
 
   useEffect(() => {
-    if (user) {
-      getSnippets().then(setSnippets);
-    } else {
-      setSnippets([]);
-    }
+    if (user) getSnippets().then(setSnippets);
+    else setSnippets([]);
   }, [user]);
 
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 2500);
-  };
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 2500); };
 
   const handleLogin = async () => {
     try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
+      await signInWithPopup(auth, new GoogleAuthProvider());
     } catch (error) {
       console.error('Login error:', error);
       showToast('Failed to sign in');
@@ -877,101 +925,69 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    try {
-      await signOut(auth);
-      setSnippets([]);
-    } catch (error) {
-      console.error('Logout error:', error);
-    }
+    try { await signOut(auth); setSnippets([]); } catch (error) { console.error('Logout error:', error); }
   };
 
   const handleSave = async (title: string, content: string) => {
-    if (!user) {
-      showToast('Please sign in to save snippets');
-      return;
-    }
-    const newSnippet: Snippet = {
-      id: crypto.randomUUID(),
-      title: title.trim() || 'Untitled Snippet',
-      content,
-      createdAt: Date.now(),
-      userId: user.uid
-    };
+    if (!user) { showToast('Please sign in to save'); return; }
+    const newSnippet: Snippet = { id: crypto.randomUUID(), title: title.trim() || 'Untitled Snippet', content, createdAt: Date.now(), userId: user.uid };
     await saveSnippet(newSnippet);
     setSnippets(await getSnippets());
-    showToast('Saved to Library');
+    showToast('Saved');
   };
 
   const handleUpdate = async (updatedSnippet: Snippet) => {
     if (!user) return;
     await saveSnippet(updatedSnippet);
     setSnippets(await getSnippets());
-    showToast('Snippet updated');
+    showToast('Updated');
     setEditingSnippet(null);
     setCurrentTab('library');
   };
 
-  const handleAutoSave = async (updatedSnippet: Snippet) => {
+  const handleAutoSave = useCallback(async (updatedSnippet: Snippet) => {
     if (!user) return;
     await saveSnippet(updatedSnippet);
     setSnippets(await getSnippets());
-  };
+  }, [user]);
 
-  const handleEdit = (snippet: Snippet) => {
-    setEditingSnippet(snippet);
-    setCurrentTab('paste');
-  };
-
-  const handleCancelEdit = () => {
-    setEditingSnippet(null);
-    setCurrentTab('library');
-  };
+  const handleEdit = (snippet: Snippet) => { setEditingSnippet(snippet); setCurrentTab('paste'); };
+  const handleCancelEdit = () => { setEditingSnippet(null); setCurrentTab('library'); };
 
   const handleDelete = async (id: string) => {
     if (!user) return;
     if (window.confirm('Delete this snippet?')) {
       await deleteSnippet(id);
       setSnippets(await getSnippets());
-      showToast('Snippet deleted');
+      showToast('Deleted');
     }
   };
 
   const handleExport = (snippet: Snippet, type: 'html' | 'image' | 'pdf' | 'markdown') => {
     setExportSheet(null);
-    
+
     if (type === 'html') {
       const blob = new Blob([snippet.content], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${snippet.title || 'snippet'}.html`;
-      a.click();
+      const a = document.createElement('a'); a.href = url; a.download = `${snippet.title || 'snippet'}.html`; a.click();
       URL.revokeObjectURL(url);
       return;
     }
 
     if (type === 'markdown') {
-      const mdContent = `# ${snippet.title || 'Untitled Snippet'}\n\n\`\`\`html\n${snippet.content}\n\`\`\``;
-      const blob = new Blob([mdContent], { type: 'text/markdown' });
+      const md = `# ${snippet.title || 'Untitled'}\n\n\`\`\`html\n${snippet.content}\n\`\`\``;
+      const blob = new Blob([md], { type: 'text/markdown' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${snippet.title || 'snippet'}.md`;
-      a.click();
+      const a = document.createElement('a'); a.href = url; a.download = `${snippet.title || 'snippet'}.md`; a.click();
       URL.revokeObjectURL(url);
       return;
     }
 
     setExporting({ id: snippet.id, type });
-    
+
     const iframe = document.createElement('iframe');
-    iframe.style.position = 'fixed';
-    iframe.style.top = '-9999px';
-    iframe.style.left = '-9999px';
-    iframe.style.width = '390px'; // iPhone width
-    iframe.style.height = '844px'; // iPhone height
-    iframe.style.opacity = '0';
-    iframe.sandbox = 'allow-scripts allow-same-origin';
+    iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:390px;height:844px;opacity:0';
+    iframe.sandbox = 'allow-scripts allow-same-origin' as any;
 
     const captureScript = `
       <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
@@ -979,94 +995,57 @@ export default function App() {
         window.onload = () => {
           setTimeout(async () => {
             try {
-              const body = document.body;
-              const html = document.documentElement;
-              const height = Math.max(body.scrollHeight, body.offsetHeight, html.clientHeight, html.scrollHeight, html.offsetHeight);
-              
-              window.parent.postMessage({ type: 'RESIZE', height }, '*');
-
+              const h = Math.max(document.body.scrollHeight, document.body.offsetHeight, document.documentElement.clientHeight, document.documentElement.scrollHeight, document.documentElement.offsetHeight);
+              window.parent.postMessage({ type: 'RESIZE', height: h }, '*');
               setTimeout(async () => {
-                const canvas = await html2canvas(document.body, { 
-                  useCORS: true,
-                  scale: 2,
-                  windowWidth: 390,
-                  windowHeight: height,
-                  backgroundColor: '#ffffff'
-                });
-                const imgData = canvas.toDataURL('image/jpeg', 0.8);
-                window.parent.postMessage({ type: 'CAPTURED', imgData, height }, '*');
+                const canvas = await html2canvas(document.body, { useCORS: true, scale: 2, windowWidth: 390, windowHeight: h, backgroundColor: '#ffffff' });
+                window.parent.postMessage({ type: 'CAPTURED', imgData: canvas.toDataURL('image/jpeg', 0.8), height: h }, '*');
               }, 500);
-            } catch (e) {
-              window.parent.postMessage({ type: 'ERROR', error: e.message }, '*');
-            }
+            } catch (e) { window.parent.postMessage({ type: 'ERROR', error: e.message }, '*'); }
           }, 1000);
         };
-      </script>
-    `;
+      </script>`;
 
-    const finalContent = snippet.content + captureScript;
-    iframe.srcDoc = finalContent;
+    iframe.srcdoc = snippet.content + captureScript;
     document.body.appendChild(iframe);
 
-    const listener = async (e: MessageEvent) => {
-      if (e.data.type === 'RESIZE') {
-        iframe.style.height = `${e.data.height}px`;
-      } else if (e.data.type === 'CAPTURED') {
+    const listener = (e: MessageEvent) => {
+      if (e.data.type === 'RESIZE') { iframe.style.height = `${e.data.height}px`; }
+      else if (e.data.type === 'CAPTURED') {
         window.removeEventListener('message', listener);
         document.body.removeChild(iframe);
         setExporting(null);
-
         const { imgData, height } = e.data;
-
         if (type === 'image') {
-          const a = document.createElement('a');
-          a.href = imgData;
-          a.download = `${snippet.title || 'snippet'}.jpg`;
-          a.click();
+          const a = document.createElement('a'); a.href = imgData; a.download = `${snippet.title || 'snippet'}.jpg`; a.click();
         } else if (type === 'pdf') {
           try {
-            const pageHeight = 844;
-            const imgWidth = 390;
-            const imgHeight = height;
-            
-            const pdf = new jsPDF({
-              orientation: 'portrait',
-              unit: 'px',
-              format: [imgWidth, pageHeight]
-            });
-            
-            let heightLeft = imgHeight;
-            let pageIndex = 0;
-
-            pdf.addImage(imgData, 'JPEG', 0, 0, imgWidth, imgHeight);
-            heightLeft -= pageHeight;
-
-            while (heightLeft > 0) {
-              pageIndex++;
-              pdf.addPage([imgWidth, pageHeight], 'portrait');
-              pdf.addImage(imgData, 'JPEG', 0, -(pageHeight * pageIndex), imgWidth, imgHeight);
-              heightLeft -= pageHeight;
-            }
-
+            const pdf = new jsPDF({ orientation: 'portrait', unit: 'px', format: [390, 844] });
+            let left = height; let page = 0;
+            pdf.addImage(imgData, 'JPEG', 0, 0, 390, height);
+            left -= 844;
+            while (left > 0) { page++; pdf.addPage([390, 844], 'portrait'); pdf.addImage(imgData, 'JPEG', 0, -(844 * page), 390, height); left -= 844; }
             pdf.save(`${snippet.title || 'snippet'}.pdf`);
-          } catch (err: any) {
-            console.error('PDF generation error:', err);
-            alert('Failed to generate PDF: ' + (err.message || String(err)));
-          }
+          } catch (err: any) { console.error('PDF error:', err); }
         }
       } else if (e.data.type === 'ERROR') {
         window.removeEventListener('message', listener);
         document.body.removeChild(iframe);
         setExporting(null);
-        alert('Failed to capture snippet: ' + e.data.error);
       }
     };
-
     window.addEventListener('message', listener);
   };
 
+  const handleApiKeySave = (key: string) => {
+    setStoredApiKey(key);
+    setApiKeyAvailable(true);
+    setShowApiKeyModal(false);
+    showToast('API key saved');
+  };
+
   return (
-    <div className="h-screen w-full bg-[#F2F2F7] dark:bg-black overflow-hidden flex flex-col font-sans selection:bg-blue-200 dark:selection:bg-blue-900 relative">
+    <div className="h-screen w-full bg-[#F2F2F7] dark:bg-black overflow-hidden flex flex-col font-sans selection:bg-indigo-100 dark:selection:bg-indigo-900/40 relative">
       <AnimatePresence mode="wait">
         {previewContent !== null ? (
           <motion.div
@@ -1075,7 +1054,7 @@ export default function App() {
             animate={{ y: 0 }}
             exit={{ y: '100%' }}
             transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-            className="absolute inset-0 z-50 bg-white dark:bg-gray-900 flex flex-col"
+            className="absolute inset-0 z-50 bg-white dark:bg-black flex flex-col"
           >
             <PreviewScreen content={previewContent} onClose={() => setPreviewContent(null)} />
           </motion.div>
@@ -1083,64 +1062,93 @@ export default function App() {
           <motion.div key="main" className="flex-1 flex flex-col h-full relative">
             <AnimatePresence mode="wait">
               {currentTab === 'paste' ? (
-                <PasteScreen key="paste" snippetToEdit={editingSnippet} onPreview={setPreviewContent} onSave={handleSave} onUpdate={handleUpdate} onAutoSave={handleAutoSave} onCancelEdit={handleCancelEdit} theme={theme} toggleTheme={toggleTheme} existingTitles={snippets.map(s => s.title)} user={user} onLogin={handleLogin} onLogout={handleLogout} />
+                <PasteScreen
+                  key="paste"
+                  snippetToEdit={editingSnippet}
+                  onPreview={setPreviewContent}
+                  onSave={handleSave}
+                  onUpdate={handleUpdate}
+                  onAutoSave={handleAutoSave}
+                  onCancelEdit={handleCancelEdit}
+                  theme={theme}
+                  toggleTheme={toggleTheme}
+                  existingTitles={snippets.map(s => s.title)}
+                  user={user}
+                  onLogin={handleLogin}
+                  onLogout={handleLogout}
+                  onTokenUsage={handleTokenUsage}
+                  apiKeyAvailable={apiKeyAvailable}
+                  onRequestApiKey={() => setShowApiKeyModal(true)}
+                />
               ) : (
-                <LibraryScreen key="library" snippets={snippets} onPreview={setPreviewContent} onEdit={handleEdit} onDelete={handleDelete} onExport={setExportSheet} theme={theme} toggleTheme={toggleTheme} user={user} onLogin={handleLogin} onLogout={handleLogout} />
+                <LibraryScreen
+                  key="library"
+                  snippets={snippets}
+                  onPreview={setPreviewContent}
+                  onEdit={handleEdit}
+                  onDelete={handleDelete}
+                  onExport={setExportSheet}
+                  theme={theme}
+                  toggleTheme={toggleTheme}
+                  user={user}
+                  onLogin={handleLogin}
+                  onLogout={handleLogout}
+                />
               )}
             </AnimatePresence>
 
-            {/* iOS Bottom Tab Bar */}
-            <div className="absolute bottom-0 left-0 right-0 bg-white/80 dark:bg-[#1C1C1E]/80 backdrop-blur-2xl border-t border-gray-200/50 dark:border-[#38383A]/80 pb-safe pt-2 px-6 flex justify-around items-center z-40">
+            {/* Token Usage Badge - above tab bar */}
+            <div className="absolute bottom-[calc(env(safe-area-inset-bottom,24px)+52px)] left-0 right-0 flex justify-center z-30 pointer-events-none">
+              <TokenBadge lastUsage={lastTokenUsage} cumulative={cumulativeUsage} />
+            </div>
+
+            {/* Tab Bar */}
+            <div className="absolute bottom-0 left-0 right-0 bg-white/80 dark:bg-[#1C1C1E]/80 backdrop-blur-2xl border-t border-gray-200/30 dark:border-[#2C2C2E] pb-safe pt-2 px-6 flex justify-around items-center z-40">
               <button
-                onClick={() => {
-                  setEditingSnippet(null);
-                  setCurrentTab('paste');
-                }}
-                className={`flex flex-col items-center p-2 w-20 active:scale-95 transition-transform ${currentTab === 'paste' && !editingSnippet ? 'text-[#007AFF] dark:text-[#0A84FF]' : 'text-[#999999] dark:text-[#98989D]'}`}
+                onClick={() => { setEditingSnippet(null); setCurrentTab('paste'); }}
+                className={`flex flex-col items-center p-2 w-20 active:scale-95 transition-transform ${currentTab === 'paste' && !editingSnippet ? 'text-[#007AFF] dark:text-[#0A84FF]' : 'text-gray-300 dark:text-gray-600'}`}
               >
-                <Plus className={`w-6 h-6 mb-1 ${currentTab === 'paste' && !editingSnippet ? 'stroke-[2.5px]' : 'stroke-2'}`} />
-                <span className="text-[10px] font-medium tracking-wide">New</span>
+                <Plus className={`w-6 h-6 mb-0.5 ${currentTab === 'paste' && !editingSnippet ? 'stroke-[2.5px]' : 'stroke-[1.5px]'}`} />
+                <span className="text-[10px] font-medium">New</span>
               </button>
               <button
-                onClick={() => {
-                  setEditingSnippet(null);
-                  setCurrentTab('library');
-                }}
-                className={`flex flex-col items-center p-2 w-20 active:scale-95 transition-transform ${currentTab === 'library' || editingSnippet ? 'text-[#007AFF] dark:text-[#0A84FF]' : 'text-[#999999] dark:text-[#98989D]'}`}
+                onClick={() => { setEditingSnippet(null); setCurrentTab('library'); }}
+                className={`flex flex-col items-center p-2 w-20 active:scale-95 transition-transform ${currentTab === 'library' || editingSnippet ? 'text-[#007AFF] dark:text-[#0A84FF]' : 'text-gray-300 dark:text-gray-600'}`}
               >
-                <Folder className={`w-6 h-6 mb-1 ${currentTab === 'library' || editingSnippet ? 'stroke-[2.5px] fill-current' : 'stroke-2'}`} />
-                <span className="text-[10px] font-medium tracking-wide">Library</span>
+                <Folder className={`w-6 h-6 mb-0.5 ${currentTab === 'library' || editingSnippet ? 'stroke-[2.5px] fill-current' : 'stroke-[1.5px]'}`} />
+                <span className="text-[10px] font-medium">Library</span>
+              </button>
+              <button
+                onClick={() => setShowApiKeyModal(true)}
+                className={`flex flex-col items-center p-2 w-20 active:scale-95 transition-transform ${apiKeyAvailable ? 'text-gray-300 dark:text-gray-600' : 'text-amber-400 dark:text-amber-500'}`}
+              >
+                <Settings className={`w-5 h-5 mb-1 stroke-[1.5px]`} />
+                <span className="text-[10px] font-medium">Settings</span>
               </button>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Toast Notification */}
+      {/* Toast */}
       <AnimatePresence>
         {toast && (
           <motion.div
             initial={{ opacity: 0, y: 20, scale: 0.9 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.9 }}
-            className="absolute top-[calc(env(safe-area-inset-top,48px)+12px)] left-1/2 -translate-x-1/2 bg-gray-800/90 dark:bg-gray-200/90 backdrop-blur-md text-white dark:text-black px-5 py-2.5 rounded-full shadow-lg z-[60] text-sm font-medium tracking-wide"
+            className="absolute top-[calc(env(safe-area-inset-top,48px)+12px)] left-1/2 -translate-x-1/2 bg-gray-800/90 dark:bg-gray-100/90 backdrop-blur-md text-white dark:text-black px-5 py-2 rounded-full shadow-lg z-[60] text-[13px] font-medium"
           >
             {toast}
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Export Action Sheet */}
+      {/* Export Sheet */}
       <AnimatePresence>
         {exportSheet && (
           <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/40 dark:bg-black/60 z-50"
-              onClick={() => setExportSheet(null)}
-            />
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/30 dark:bg-black/50 z-50" onClick={() => setExportSheet(null)} />
             <motion.div
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
@@ -1148,40 +1156,27 @@ export default function App() {
               transition={{ type: 'spring', damping: 25, stiffness: 300 }}
               className="fixed bottom-0 left-0 right-0 p-4 z-50 pb-safe"
             >
-              <div className="bg-white/90 dark:bg-[#2C2C2E]/90 backdrop-blur-xl rounded-[14px] overflow-hidden mb-2">
-                <div className="py-3.5 border-b border-gray-200/50 dark:border-gray-700/50">
-                  <h3 className="text-[13px] font-semibold text-center text-gray-500 dark:text-gray-400">Export "{exportSheet.title}"</h3>
+              <div className="bg-white/90 dark:bg-[#2C2C2E]/90 backdrop-blur-xl rounded-2xl overflow-hidden mb-2">
+                <div className="py-3 border-b border-gray-100 dark:border-gray-700/30">
+                  <h3 className="text-[12px] font-semibold text-center text-gray-400 dark:text-gray-500">Export "{exportSheet.title}"</h3>
                 </div>
-                <button
-                  onClick={() => handleExport(exportSheet, 'html')}
-                  className="w-full py-4 border-b border-gray-200/50 dark:border-gray-700/50 text-[17px] text-[#007AFF] dark:text-[#0A84FF] active:bg-gray-200/50 dark:active:bg-gray-700/50 transition-colors"
-                >
-                  Download HTML File
-                </button>
-                <button
-                  onClick={() => handleExport(exportSheet, 'markdown')}
-                  className="w-full py-4 border-b border-gray-200/50 dark:border-gray-700/50 text-[17px] text-[#007AFF] dark:text-[#0A84FF] active:bg-gray-200/50 dark:active:bg-gray-700/50 transition-colors"
-                >
-                  Download as Markdown (.md)
-                </button>
-                <button
-                  onClick={() => handleExport(exportSheet, 'image')}
-                  className="w-full py-4 border-b border-gray-200/50 dark:border-gray-700/50 text-[17px] text-[#007AFF] dark:text-[#0A84FF] active:bg-gray-200/50 dark:active:bg-gray-700/50 transition-colors"
-                >
-                  Save as Image (JPG)
-                </button>
-                <button
-                  onClick={() => handleExport(exportSheet, 'pdf')}
-                  className="w-full py-4 text-[17px] text-[#007AFF] dark:text-[#0A84FF] active:bg-gray-200/50 dark:active:bg-gray-700/50 transition-colors"
-                >
-                  Save as PDF (Multi-page)
-                </button>
+                {[
+                  { label: 'HTML File', type: 'html' as const },
+                  { label: 'Markdown', type: 'markdown' as const },
+                  { label: 'Image (JPG)', type: 'image' as const },
+                  { label: 'PDF', type: 'pdf' as const },
+                ].map((opt, i, arr) => (
+                  <button
+                    key={opt.type}
+                    onClick={() => handleExport(exportSheet, opt.type)}
+                    className={`w-full py-3.5 text-[16px] text-[#007AFF] dark:text-[#0A84FF] active:bg-gray-100 dark:active:bg-gray-700/30 transition-colors ${i < arr.length - 1 ? 'border-b border-gray-100 dark:border-gray-700/30' : ''}`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
               </div>
-              <div className="bg-white/90 dark:bg-[#2C2C2E]/90 backdrop-blur-xl rounded-[14px] overflow-hidden">
-                <button
-                  onClick={() => setExportSheet(null)}
-                  className="w-full py-4 text-[17px] font-semibold text-[#007AFF] dark:text-[#0A84FF] active:bg-gray-200/50 dark:active:bg-gray-700/50 transition-colors"
-                >
+              <div className="bg-white/90 dark:bg-[#2C2C2E]/90 backdrop-blur-xl rounded-2xl overflow-hidden">
+                <button onClick={() => setExportSheet(null)} className="w-full py-3.5 text-[16px] font-semibold text-[#007AFF] dark:text-[#0A84FF] active:bg-gray-100 dark:active:bg-gray-700/30 transition-colors">
                   Cancel
                 </button>
               </div>
@@ -1190,19 +1185,23 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Loading Overlay */}
+      {/* Export Loading */}
       <AnimatePresence>
         {exporting && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm z-[70] flex flex-col items-center justify-center"
-          >
-            <div className="w-10 h-10 border-4 border-[#007AFF] dark:border-blue-400 border-t-transparent rounded-full animate-spin mb-4"></div>
-            <p className="font-medium text-gray-700 dark:text-gray-300">Generating {exporting.type.toUpperCase()}...</p>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-white/80 dark:bg-black/80 backdrop-blur-sm z-[70] flex flex-col items-center justify-center">
+            <div className="w-8 h-8 border-3 border-[#007AFF] border-t-transparent rounded-full animate-spin mb-3" />
+            <p className="text-[14px] font-medium text-gray-500 dark:text-gray-400">Generating {exporting.type}...</p>
           </motion.div>
         )}
+      </AnimatePresence>
+
+      {/* API Key Modal */}
+      <AnimatePresence>
+        <ApiKeyModal
+          isOpen={showApiKeyModal}
+          onClose={() => setShowApiKeyModal(false)}
+          onSave={handleApiKeySave}
+        />
       </AnimatePresence>
     </div>
   );
