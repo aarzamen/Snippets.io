@@ -1,0 +1,81 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: snippets
+    // Document ID: {snippetId}
+    // Fields:
+    //   - id: string (required) - The unique identifier for the snippet
+    //   - title: string (required, max 200 chars) - The title of the snippet
+    //   - content: string (required, max 500000 chars) - The code content
+    //   - createdAt: number (required) - Creation timestamp
+    //   - userId: string (required, immutable) - The owner's user ID
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+    
+    function uidUnchanged() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid;
+    }
+    
+    function uidNotModified() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId;
+    }
+    
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+    
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    
+    function isValidSnippet(data) {
+      return hasOnlyAllowedFields(['id', 'title', 'content', 'createdAt', 'userId']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() < 100 &&
+             data.title is string && data.title.size() <= 200 &&
+             data.content is string && data.content.size() <= 500000 &&
+             data.createdAt is number &&
+             data.userId is string && data.userId.size() > 0;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /snippets/{snippetId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && 
+                    isValidSnippet(request.resource.data) && 
+                    uidUnchanged() && 
+                    request.resource.data.userId == request.auth.uid;
+      allow update: if isDocOwner() && 
+                    isValidSnippet(request.resource.data) && 
+                    uidNotModified();
+      allow delete: if isDocOwner();
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "entities": {
+    "Snippet": {
+      "title": "Snippet",
+      "description": "A user's saved HTML/JS/CSS code snippet.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The unique identifier for the snippet."
+        },
+        "title": {
+          "type": "string",
+          "description": "The title of the snippet."
+        },
+        "content": {
+          "type": "string",
+          "description": "The raw code content of the snippet."
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "The timestamp when the snippet was created."
+        },
+        "userId": {
+          "type": "string",
+          "description": "The ID of the user who owns the snippet."
+        }
+      },
+      "required": ["id", "title", "content", "createdAt", "userId"]
+    }
+  },
+  "firestore": {
+    "/snippets/{snippetId}": {
+      "schema": {
+        "$ref": "#/entities/Snippet"
+      },
+      "description": "Stores all user snippets."
+    }
+  }
+}

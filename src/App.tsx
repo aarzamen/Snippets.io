@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Plus, Folder, Play, Save, Trash2, ChevronLeft, FileCode2, Monitor, Smartphone, Download, Sun, Moon, ChevronRight, Sparkles, Loader2, Wand2, Bug, MessageSquare, Undo, Redo, Terminal, Copy, Check, AlignLeft, HelpCircle, TestTube, Upload } from 'lucide-react';
+import { Plus, Folder, Play, Save, Trash2, ChevronLeft, ChevronDown, FileCode2, Monitor, Smartphone, Download, Sun, Moon, ChevronRight, Sparkles, Loader2, Wand2, Bug, MessageSquare, Undo, Redo, Terminal, Copy, Check, AlignLeft, HelpCircle, TestTube, Upload, LogIn, LogOut, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getSnippets, saveSnippet, deleteSnippet, Snippet } from './store';
 import { jsPDF } from 'jspdf';
@@ -7,6 +7,8 @@ import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
 import 'prismjs/themes/prism.css';
 import { GoogleGenAI } from '@google/genai';
+import { auth } from './firebase';
+import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 
 function injectMobileMeta(html: string) {
   // Remove any existing viewport tags to prevent conflicts
@@ -29,7 +31,7 @@ function injectMobileMeta(html: string) {
   }
 }
 
-function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, onCancelEdit, theme, toggleTheme, existingTitles }: { snippetToEdit: Snippet | null, onPreview: (c: string) => void, onSave: (t: string, c: string) => void, onUpdate: (s: Snippet) => void, onAutoSave: (s: Snippet) => void, onCancelEdit: () => void, theme: 'light' | 'dark', toggleTheme: () => void, existingTitles: string[] }) {
+function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, onCancelEdit, theme, toggleTheme, existingTitles, user, onLogin, onLogout }: { snippetToEdit: Snippet | null, onPreview: (c: string) => void, onSave: (t: string, c: string) => void, onUpdate: (s: Snippet) => void, onAutoSave: (s: Snippet) => void, onCancelEdit: () => void, theme: 'light' | 'dark', toggleTheme: () => void, existingTitles: string[], user: FirebaseUser | null, onLogin: () => void, onLogout: () => void }) {
   const [content, setContent] = useState('');
   const [debouncedContent, setDebouncedContent] = useState('');
   const [title, setTitle] = useState('');
@@ -42,6 +44,7 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
   
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [aiAction, setAiAction] = useState<string | null>(null);
+  const [isFormatMenuOpen, setIsFormatMenuOpen] = useState(false);
 
   const [history, setHistory] = useState<string[]>(['']);
   const [historyIndex, setHistoryIndex] = useState<number>(0);
@@ -204,10 +207,10 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
     return () => { isMounted = false; };
   }, [debouncedContent, isManuallyEditedTitle, snippetToEdit, existingTitles]);
 
-  const handleAiAction = async (action: 'optimize' | 'fix' | 'comments' | 'format' | 'explain' | 'tests') => {
+  const handleAiAction = async (action: 'optimize' | 'fix' | 'comments' | 'format' | 'explain' | 'tests', framework?: string) => {
     if (!content.trim()) return;
     setIsAiProcessing(true);
-    setAiAction(action);
+    setAiAction(framework ? `format-${framework}` : action);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       let prompt = '';
@@ -218,7 +221,11 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
       } else if (action === 'comments') {
         prompt = `Add helpful, concise comments explaining the following web code. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
       } else if (action === 'format') {
-        prompt = `Format the following web code with proper indentation and consistent style. Additionally, enhance its user interface, appearance, and formatting by improving CSS properties like self padding, UI colors, color schemes, font sizes, relative placement, and absolute placement of elements to make it look modern and beautiful. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+        if (framework) {
+          prompt = `Format the following web code with proper indentation and consistent style. Additionally, enhance its user interface, appearance, and formatting by applying ${framework} classes and best practices. Make it look modern, beautiful, and fully responsive using ${framework}. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+        } else {
+          prompt = `Format the following web code with proper indentation and consistent style. Additionally, enhance its user interface, appearance, and formatting by improving CSS properties like self padding, UI colors, color schemes, font sizes, relative placement, and absolute placement of elements to make it look modern and beautiful. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+        }
       } else if (action === 'explain') {
         prompt = `Explain the following web code. Instead of just a code comment, prepend your explanation as a beautifully styled, absolutely positioned HTML overlay or card (using nice UI colors, color schemes, font sizes, self padding, and relative/absolute placement) that visually explains the code to the user directly on the page. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
       } else if (action === 'tests') {
@@ -323,9 +330,24 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
             {snippetToEdit ? 'Edit Snippet' : 'New Snippet'}
           </h1>
         </div>
-        <button onClick={toggleTheme} className="p-2 text-gray-500 dark:text-gray-400 bg-gray-200/50 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform">
-          {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-        </button>
+        <div className="flex items-center gap-3">
+          {user ? (
+            <div className="flex items-center gap-2">
+              {user.photoURL && <img src={user.photoURL} alt="Profile" className="w-8 h-8 rounded-full border border-gray-200 dark:border-gray-700" referrerPolicy="no-referrer" />}
+              <button onClick={onLogout} className="p-2 text-gray-500 dark:text-gray-400 bg-gray-200/50 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform" title="Sign Out">
+                <LogOut className="w-5 h-5" />
+              </button>
+            </div>
+          ) : (
+            <button onClick={onLogin} className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-[#007AFF] dark:bg-[#0A84FF] rounded-full active:scale-95 transition-transform" title="Sign In with Google">
+              <LogIn className="w-4 h-4" />
+              Sign In
+            </button>
+          )}
+          <button onClick={toggleTheme} className="p-2 text-gray-500 dark:text-gray-400 bg-gray-200/50 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform">
+            {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+          </button>
+        </div>
       </div>
 
       <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-sm overflow-hidden mb-6 border border-gray-200/50 dark:border-[#38383A] flex-shrink-0 flex flex-col">
@@ -363,10 +385,49 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
             {isAiProcessing && aiAction === 'comments' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MessageSquare className="w-3.5 h-3.5" />}
             Add Comments
           </button>
-          <button onClick={() => handleAiAction('format')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-[#AF52DE] dark:text-[#BF5AF2] shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-50">
-            {isAiProcessing && aiAction === 'format' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <AlignLeft className="w-3.5 h-3.5" />}
-            Format
-          </button>
+          <div className="relative flex-shrink-0">
+            <button onClick={() => setIsFormatMenuOpen(!isFormatMenuOpen)} disabled={isAiProcessing || !content.trim()} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-[#AF52DE] dark:text-[#BF5AF2] shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-50">
+              {isAiProcessing && aiAction?.startsWith('format') ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <AlignLeft className="w-3.5 h-3.5" />}
+              Format
+              <ChevronDown className="w-3 h-3 ml-0.5 opacity-70" />
+            </button>
+            
+            <AnimatePresence>
+              {isFormatMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setIsFormatMenuOpen(false)} />
+                  <motion.div
+                    initial={{ opacity: 0, y: 5, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 5, scale: 0.95 }}
+                    transition={{ duration: 0.15 }}
+                    className="absolute top-full left-0 mt-1.5 w-40 bg-white dark:bg-[#2C2C2E] rounded-xl shadow-lg border border-gray-200/50 dark:border-[#38383A] overflow-hidden z-20"
+                  >
+                    <div className="py-1">
+                      <button
+                        onClick={() => { handleAiAction('format'); setIsFormatMenuOpen(false); }}
+                        className="w-full text-left px-3 py-2 text-[13px] text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-[#38383A] transition-colors"
+                      >
+                        Standard
+                      </button>
+                      <button
+                        onClick={() => { handleAiAction('format', 'Tailwind CSS'); setIsFormatMenuOpen(false); }}
+                        className="w-full text-left px-3 py-2 text-[13px] text-[#38BDF8] hover:bg-gray-100 dark:hover:bg-[#38383A] transition-colors font-medium"
+                      >
+                        Tailwind CSS
+                      </button>
+                      <button
+                        onClick={() => { handleAiAction('format', 'Bootstrap'); setIsFormatMenuOpen(false); }}
+                        className="w-full text-left px-3 py-2 text-[13px] text-[#7952B3] hover:bg-gray-100 dark:hover:bg-[#38383A] transition-colors font-medium"
+                      >
+                        Bootstrap
+                      </button>
+                    </div>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
+          </div>
           <button onClick={() => handleAiAction('explain')} disabled={isAiProcessing || !content.trim()} className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-[12px] font-medium text-[#5856D6] dark:text-[#5E5CE6] shadow-sm border border-gray-200/50 dark:border-[#38383A] active:scale-95 transition-all disabled:opacity-50">
             {isAiProcessing && aiAction === 'explain' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <HelpCircle className="w-3.5 h-3.5" />}
             Explain
@@ -463,7 +524,7 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
   );
 }
 
-function LibraryScreen({ snippets, onPreview, onEdit, onDelete, onExport, theme, toggleTheme }: { snippets: Snippet[], onPreview: (c: string) => void, onEdit: (s: Snippet) => void, onDelete: (id: string) => void, onExport: (s: Snippet) => void, theme: 'light' | 'dark', toggleTheme: () => void }) {
+function LibraryScreen({ snippets, onPreview, onEdit, onDelete, onExport, theme, toggleTheme, user, onLogin, onLogout }: { snippets: Snippet[], onPreview: (c: string) => void, onEdit: (s: Snippet) => void, onDelete: (id: string) => void, onExport: (s: Snippet) => void, theme: 'light' | 'dark', toggleTheme: () => void, user: FirebaseUser | null, onLogin: () => void, onLogout: () => void }) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const handleCopy = (id: string, content: string) => {
@@ -481,9 +542,24 @@ function LibraryScreen({ snippets, onPreview, onEdit, onDelete, onExport, theme,
     >
       <div className="flex items-center justify-between mt-4 mb-6">
         <h1 className="text-[34px] font-bold text-black dark:text-white tracking-tight">Library</h1>
-        <button onClick={toggleTheme} className="p-2 text-gray-500 dark:text-gray-400 bg-gray-200/50 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform">
-          {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-        </button>
+        <div className="flex items-center gap-3">
+          {user ? (
+            <div className="flex items-center gap-2">
+              {user.photoURL && <img src={user.photoURL} alt="Profile" className="w-8 h-8 rounded-full border border-gray-200 dark:border-gray-700" referrerPolicy="no-referrer" />}
+              <button onClick={onLogout} className="p-2 text-gray-500 dark:text-gray-400 bg-gray-200/50 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform" title="Sign Out">
+                <LogOut className="w-5 h-5" />
+              </button>
+            </div>
+          ) : (
+            <button onClick={onLogin} className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-[#007AFF] dark:bg-[#0A84FF] rounded-full active:scale-95 transition-transform" title="Sign In with Google">
+              <LogIn className="w-4 h-4" />
+              Sign In
+            </button>
+          )}
+          <button onClick={toggleTheme} className="p-2 text-gray-500 dark:text-gray-400 bg-gray-200/50 dark:bg-[#2C2C2E] rounded-full active:scale-95 transition-transform">
+            {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+          </button>
+        </div>
       </div>
 
       {snippets.length === 0 ? (
@@ -754,6 +830,16 @@ export default function App() {
   const [exportSheet, setExportSheet] = useState<Snippet | null>(null);
   const [exporting, setExporting] = useState<{ id: string, type: 'html' | 'image' | 'pdf' | 'markdown' } | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     if (theme === 'dark') {
@@ -768,20 +854,48 @@ export default function App() {
   };
 
   useEffect(() => {
-    getSnippets().then(setSnippets);
-  }, []);
+    if (user) {
+      getSnippets().then(setSnippets);
+    } else {
+      setSnippets([]);
+    }
+  }, [user]);
 
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 2500);
   };
 
+  const handleLogin = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error('Login error:', error);
+      showToast('Failed to sign in');
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setSnippets([]);
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+
   const handleSave = async (title: string, content: string) => {
+    if (!user) {
+      showToast('Please sign in to save snippets');
+      return;
+    }
     const newSnippet: Snippet = {
       id: crypto.randomUUID(),
       title: title.trim() || 'Untitled Snippet',
       content,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      userId: user.uid
     };
     await saveSnippet(newSnippet);
     setSnippets(await getSnippets());
@@ -789,6 +903,7 @@ export default function App() {
   };
 
   const handleUpdate = async (updatedSnippet: Snippet) => {
+    if (!user) return;
     await saveSnippet(updatedSnippet);
     setSnippets(await getSnippets());
     showToast('Snippet updated');
@@ -797,6 +912,7 @@ export default function App() {
   };
 
   const handleAutoSave = async (updatedSnippet: Snippet) => {
+    if (!user) return;
     await saveSnippet(updatedSnippet);
     setSnippets(await getSnippets());
   };
@@ -812,6 +928,7 @@ export default function App() {
   };
 
   const handleDelete = async (id: string) => {
+    if (!user) return;
     if (window.confirm('Delete this snippet?')) {
       await deleteSnippet(id);
       setSnippets(await getSnippets());
@@ -966,9 +1083,9 @@ export default function App() {
           <motion.div key="main" className="flex-1 flex flex-col h-full relative">
             <AnimatePresence mode="wait">
               {currentTab === 'paste' ? (
-                <PasteScreen key="paste" snippetToEdit={editingSnippet} onPreview={setPreviewContent} onSave={handleSave} onUpdate={handleUpdate} onAutoSave={handleAutoSave} onCancelEdit={handleCancelEdit} theme={theme} toggleTheme={toggleTheme} existingTitles={snippets.map(s => s.title)} />
+                <PasteScreen key="paste" snippetToEdit={editingSnippet} onPreview={setPreviewContent} onSave={handleSave} onUpdate={handleUpdate} onAutoSave={handleAutoSave} onCancelEdit={handleCancelEdit} theme={theme} toggleTheme={toggleTheme} existingTitles={snippets.map(s => s.title)} user={user} onLogin={handleLogin} onLogout={handleLogout} />
               ) : (
-                <LibraryScreen key="library" snippets={snippets} onPreview={setPreviewContent} onEdit={handleEdit} onDelete={handleDelete} onExport={setExportSheet} theme={theme} toggleTheme={toggleTheme} />
+                <LibraryScreen key="library" snippets={snippets} onPreview={setPreviewContent} onEdit={handleEdit} onDelete={handleDelete} onExport={setExportSheet} theme={theme} toggleTheme={toggleTheme} user={user} onLogin={handleLogin} onLogout={handleLogout} />
               )}
             </AnimatePresence>
 

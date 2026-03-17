@@ -1,43 +1,43 @@
-import { get, set } from 'idb-keyval';
+import { collection, doc, setDoc, deleteDoc, getDocs, query, where, orderBy, onSnapshot } from 'firebase/firestore';
+import { db, auth } from './firebase';
 
 export interface Snippet {
   id: string;
   title: string;
   content: string;
   createdAt: number;
+  userId: string;
 }
 
-const STORE_KEY = 'html_snippets';
+const COLLECTION_NAME = 'snippets';
 
 export async function getSnippets(): Promise<Snippet[]> {
-  const data = await get<Snippet[]>(STORE_KEY);
-  if (!data) return [];
+  if (!auth.currentUser) return [];
   
-  // Deduplicate by ID, keeping the most recent one (first occurrence)
-  const uniqueSnippets: Snippet[] = [];
-  const seenIds = new Set<string>();
-  for (const snippet of data) {
-    if (!seenIds.has(snippet.id)) {
-      uniqueSnippets.push(snippet);
-      seenIds.add(snippet.id);
-    }
-  }
-  return uniqueSnippets;
+  const q = query(
+    collection(db, COLLECTION_NAME),
+    where('userId', '==', auth.currentUser.uid),
+    orderBy('createdAt', 'desc')
+  );
+  
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map(doc => doc.data() as Snippet);
 }
 
 export async function saveSnippet(snippet: Snippet): Promise<void> {
-  const snippets = await getSnippets();
-  const existingIndex = snippets.findIndex(s => s.id === snippet.id);
+  if (!auth.currentUser) throw new Error('User must be logged in to save snippets');
   
-  if (existingIndex >= 0) {
-    snippets[existingIndex] = snippet;
-    await set(STORE_KEY, snippets);
-  } else {
-    await set(STORE_KEY, [snippet, ...snippets]);
-  }
+  const snippetWithUser = {
+    ...snippet,
+    userId: auth.currentUser.uid
+  };
+  
+  await setDoc(doc(db, COLLECTION_NAME, snippet.id), snippetWithUser);
 }
 
 export async function deleteSnippet(id: string): Promise<void> {
-  const snippets = await getSnippets();
-  await set(STORE_KEY, snippets.filter(s => s.id !== id));
+  if (!auth.currentUser) throw new Error('User must be logged in to delete snippets');
+  
+  await deleteDoc(doc(db, COLLECTION_NAME, id));
 }
+
