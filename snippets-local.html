@@ -1,0 +1,1638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Snippets Local</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<style>
+:root {
+  --bg: #1e1e2e;
+  --bg-secondary: #252536;
+  --bg-tertiary: #2a2a3c;
+  --text: #e0e0e8;
+  --text-secondary: #a0a0b0;
+  --border: #3a3a4c;
+  --accent: #7c7cf0;
+  --accent-hover: #9090ff;
+  --success: #4caf50;
+  --warning: #ff9800;
+  --error: #f44336;
+  --toolbar-height: 44px;
+  --sidebar-width: 260px;
+  --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --radius: 8px;
+}
+
+.light {
+  --bg: #ffffff;
+  --bg-secondary: #f5f5f7;
+  --bg-tertiary: #ebebed;
+  --text: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --border: #d2d2d7;
+  --accent: #5856d6;
+  --accent-hover: #4240b0;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  font-family: var(--font-ui);
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+/* Loading skeleton */
+.loading-skeleton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-size: 18px;
+}
+
+/* Layout */
+.app { display: flex; flex-direction: column; height: 100vh; }
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  height: var(--toolbar-height);
+  padding: 0 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbar-spacer { flex: 1; }
+
+.main-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Editor pane */
+.editor-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+}
+
+.editor-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.editor-wrapper {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.line-numbers {
+  width: 48px;
+  padding: 12px 8px 12px 0;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--bg);
+  overflow: hidden;
+  user-select: none;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+}
+
+#editor {
+  flex: 1;
+  resize: none;
+  border: none;
+  outline: none;
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  tab-size: 2;
+  background: var(--bg);
+  color: var(--text);
+  overflow: auto;
+  white-space: pre;
+  word-wrap: normal;
+}
+
+#editor::placeholder { color: var(--text-secondary); }
+
+/* Resize handle */
+.resize-handle {
+  width: 5px;
+  cursor: col-resize;
+  background: var(--border);
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+.resize-handle:hover { background: var(--accent); }
+
+/* Preview pane */
+.preview-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-secondary);
+}
+
+.preview-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.preview-modes { display: flex; gap: 4px; }
+
+.preview-mode-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+.preview-mode-btn.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.preview-frame-container {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12px;
+  overflow: auto;
+  background: var(--bg-tertiary);
+}
+
+#preview-frame {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  transition: width 0.3s, height 0.3s;
+}
+
+/* Console panel */
+.console-panel {
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  max-height: 200px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.console-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+
+.console-body { padding: 8px 12px; }
+
+.console-entry {
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border);
+}
+.console-entry.log { color: var(--text); }
+.console-entry.warn { color: var(--warning); }
+.console-entry.error { color: var(--error); }
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.btn:hover { background: var(--border); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn.primary {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.btn.primary:hover { background: var(--accent-hover); }
+
+/* Status indicator */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--error);
+  flex-shrink: 0;
+}
+.status-dot.connected { background: var(--success); }
+.status-dot.loading { background: var(--warning); animation: pulse 1.5s infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.status-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* Token badge */
+.token-badge {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+.token-badge.visible { display: inline-flex; }
+
+/* Settings panel */
+.settings-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 100;
+}
+.settings-overlay.open { display: flex; align-items: center; justify-content: center; }
+
+.settings-panel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  width: 480px;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+}
+
+.settings-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.settings-group {
+  margin-bottom: 16px;
+}
+
+.settings-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
+.settings-input, .settings-textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.settings-textarea {
+  height: 100px;
+  resize: vertical;
+}
+
+.settings-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.settings-row > * { flex: 1; }
+
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.download-progress {
+  display: none;
+  margin-top: 8px;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  width: 0%;
+  transition: width 0.3s;
+  border-radius: 3px;
+}
+
+/* Library sidebar */
+.library-sidebar {
+  display: none;
+  width: var(--sidebar-width);
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.library-sidebar.open { display: flex; }
+
+.library-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.library-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.library-item {
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: background 0.15s;
+}
+.library-item:hover { background: var(--bg-tertiary); }
+.library-item.active { background: var(--accent); color: white; }
+.library-item .delete-btn {
+  opacity: 0;
+  background: none;
+  border: none;
+  color: var(--error);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+.library-item:hover .delete-btn { opacity: 1; }
+
+.library-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.library-item-date {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+/* Export menu */
+.dropdown {
+  position: relative;
+}
+.dropdown-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  z-index: 50;
+}
+.dropdown-menu.open { display: block; }
+.dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+  font-family: var(--font-ui);
+}
+.dropdown-item:hover { background: var(--bg-tertiary); }
+
+/* Format dropdown */
+.format-dropdown {
+  position: relative;
+  display: inline-block;
+}
+.format-menu {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 140px;
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.2);
+  z-index: 50;
+}
+.format-menu.open { display: block; }
+
+/* AI loading spinner */
+.spinner {
+  display: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+.spinner.active { display: inline-block; }
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Help tooltip */
+.help-tooltip {
+  display: none;
+  position: absolute;
+  top: var(--toolbar-height);
+  right: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  width: 280px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  z-index: 50;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.help-tooltip.open { display: block; }
+.help-tooltip kbd {
+  padding: 2px 6px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+</style>
+</head>
+<body>
+
+<!-- Loading skeleton (shown briefly on first paint) -->
+<div id="loading" class="loading-skeleton">Loading Snippets Local...</div>
+
+<div id="app" class="app" style="display:none;">
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="toolbar-group">
+      <button class="btn" id="btn-library" title="Toggle snippet library">&#x1F4C1;</button>
+      <button class="btn" id="btn-new" title="New snippet">+ New</button>
+    </div>
+
+    <div class="toolbar-group" id="ai-toolbar">
+      <button class="btn" id="btn-optimize" title="Optimize code" disabled>&#x26A1; Optimize</button>
+      <button class="btn" id="btn-fix" title="Fix bugs" disabled>&#x1F41B; Fix Bugs</button>
+      <button class="btn" id="btn-comment" title="Add comments" disabled>&#x1F4AC; Comment</button>
+      <div class="format-dropdown">
+        <button class="btn" id="btn-format" title="Format code" disabled>&#x1F4D0; Format</button>
+        <div class="format-menu" id="format-menu">
+          <button class="dropdown-item" data-framework="vanilla">Vanilla</button>
+          <button class="dropdown-item" data-framework="react">React</button>
+          <button class="dropdown-item" data-framework="vue">Vue</button>
+          <button class="dropdown-item" data-framework="tailwind">Tailwind CSS</button>
+        </div>
+      </div>
+      <div class="spinner" id="ai-spinner"></div>
+    </div>
+
+    <div class="token-badge" id="token-badge">
+      <span id="token-last"></span>
+      <span>|</span>
+      <span id="token-session"></span>
+    </div>
+
+    <div class="toolbar-spacer"></div>
+
+    <div class="toolbar-group">
+      <span class="status-dot" id="status-dot"></span>
+      <span class="status-text" id="status-text">Checking...</span>
+    </div>
+
+    <div class="toolbar-group">
+      <div class="dropdown">
+        <button class="btn" id="btn-export">Export &#x25BE;</button>
+        <div class="dropdown-menu" id="export-menu">
+          <button class="dropdown-item" id="export-html">Download HTML</button>
+          <button class="dropdown-item" id="export-clipboard">Copy to Clipboard</button>
+        </div>
+      </div>
+      <button class="btn" id="btn-theme" title="Toggle theme">&#x1F319;</button>
+      <button class="btn" id="btn-help" title="Keyboard shortcuts">?</button>
+      <button class="btn" id="btn-settings" title="Settings">&#x2699;</button>
+    </div>
+  </div>
+
+  <!-- Help tooltip -->
+  <div class="help-tooltip" id="help-tooltip">
+    <strong>Keyboard Shortcuts</strong><br><br>
+    <kbd>Cmd+Z</kbd> / <kbd>Ctrl+Z</kbd> — Undo<br>
+    <kbd>Cmd+Shift+Z</kbd> / <kbd>Ctrl+Shift+Z</kbd> — Redo<br>
+    <kbd>Cmd+S</kbd> / <kbd>Ctrl+S</kbd> — Save snippet<br>
+    <kbd>Tab</kbd> — Insert 2 spaces<br>
+    <br>
+    <strong>AI Commands</strong><br>
+    Optimize, Fix Bugs, Comment, and Format<br>
+    are available when the MLX server is connected.
+  </div>
+
+  <!-- Main content -->
+  <div class="main-content">
+    <!-- Library sidebar -->
+    <div class="library-sidebar" id="library-sidebar">
+      <div class="library-header">
+        <span>Snippets</span>
+        <button class="btn" id="btn-library-close" style="padding:2px 8px;font-size:14px;">&times;</button>
+      </div>
+      <div class="library-list" id="library-list"></div>
+    </div>
+
+    <!-- Editor -->
+    <div class="editor-pane">
+      <div class="editor-container">
+        <div class="editor-wrapper">
+          <div class="line-numbers" id="line-numbers"></div>
+          <textarea id="editor" spellcheck="false" placeholder="Paste or type your HTML, CSS, and JavaScript here..."></textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- Resize handle -->
+    <div class="resize-handle" id="resize-handle"></div>
+
+    <!-- Preview -->
+    <div class="preview-pane">
+      <div class="preview-header">
+        <span>Preview</span>
+        <div class="preview-modes">
+          <button class="preview-mode-btn" data-mode="portrait">Portrait</button>
+          <button class="preview-mode-btn" data-mode="landscape">Landscape</button>
+          <button class="preview-mode-btn active" data-mode="desktop">Desktop</button>
+        </div>
+        <div style="flex:1;"></div>
+        <button class="btn" id="btn-console" style="padding:2px 8px;font-size:11px;">Console (<span id="console-count">0</span>)</button>
+      </div>
+
+      <div class="preview-frame-container" id="preview-container">
+        <iframe id="preview-frame" sandbox="allow-scripts allow-modals"></iframe>
+      </div>
+
+      <!-- Console -->
+      <div class="console-panel" id="console-panel" style="display:none;">
+        <div class="console-header" id="console-header">
+          <span>Console</span>
+          <button class="btn" id="btn-clear-console" style="padding:2px 8px;font-size:11px;">Clear</button>
+        </div>
+        <div class="console-body" id="console-body"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings overlay -->
+<div class="settings-overlay" id="settings-overlay">
+  <div class="settings-panel">
+    <div class="settings-title">Settings</div>
+
+    <div class="settings-group">
+      <label class="settings-label">Model Repo ID</label>
+      <div class="settings-row">
+        <input type="text" class="settings-input" id="settings-model"
+               value="mlx-community/Llama-3.2-3B-Instruct-4bit">
+        <button class="btn primary" id="btn-download-model" style="flex:0;">Download</button>
+      </div>
+      <div class="download-progress" id="download-progress">
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <span class="settings-label" id="download-status" style="margin-top:4px;"></span>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <label class="settings-label">Connection Status</label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span class="status-dot" id="settings-status-dot"></span>
+        <span id="settings-status-text" style="font-size:13px;">Checking...</span>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <label class="settings-label">System Prompt Override</label>
+      <textarea class="settings-textarea" id="settings-system-prompt"
+                placeholder="Leave blank to use default prompts"></textarea>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-group">
+        <label class="settings-label">Max Tokens</label>
+        <input type="number" class="settings-input" id="settings-max-tokens" value="4096" min="256" max="8192">
+      </div>
+      <div class="settings-group">
+        <label class="settings-label">Temperature: <span id="temp-value">0.3</span></label>
+        <input type="range" id="settings-temperature" min="0" max="1" step="0.1" value="0.3"
+               style="width:100%;margin-top:8px;">
+      </div>
+    </div>
+
+    <div class="settings-footer">
+      <button class="btn" id="btn-settings-cancel">Cancel</button>
+      <button class="btn primary" id="btn-settings-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-css.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+
+<script>
+// ---------------------------------------------------------------------------
+// System Prompts
+// ---------------------------------------------------------------------------
+const SYSTEM_PROMPTS = {
+  optimize: `You are a code optimization expert. You receive a single HTML file containing HTML, CSS, and JavaScript.
+
+RULES — follow every one:
+1. Return ONLY the complete, modified code. No markdown fences. No explanations. No preamble.
+2. Preserve ALL existing functionality exactly — if it worked before, it must work after.
+3. Do not add new features. Do not remove features. Only improve what exists.
+
+OPTIMIZATIONS TO APPLY (in order of priority):
+- Replace repeated inline styles with CSS classes
+- Convert var to const/let as appropriate
+- Replace document.getElementById chains with cached references
+- Move <script> to end of <body> if currently in <head>
+- Replace string concatenation in loops with template literals or array.join
+- Add loading="lazy" to images missing it
+- Convert setTimeout chains to async/await where clearer
+- Use CSS custom properties for repeated color/size values
+
+CONSTRAINTS:
+- Do NOT add external dependencies or CDN links not already present
+- Do NOT change the visual appearance
+- Do NOT restructure the HTML hierarchy
+- If the code is already well-optimized, return it unchanged
+- Maximum response: the complete file content, nothing else`,
+
+  fix: `You are a bug-fixing specialist. You receive a single HTML file that may contain bugs.
+
+RULES — follow every one:
+1. Return ONLY the complete, fixed code. No markdown fences. No explanations. No preamble.
+2. Fix bugs. Do not add features. Do not optimize unless fixing a bug requires it.
+3. If no bugs are found, return the code unchanged.
+
+BUGS TO LOOK FOR (check each one):
+- Unclosed HTML tags (check every opening tag has a matching close)
+- Missing semicolons in JavaScript (add them)
+- Undefined variables (check every variable reference has a declaration)
+- Missing event listener cleanup (addEventListener without removeEventListener in SPAs)
+- CSS typos: check property names are valid (e.g. "colr" → "color")
+- JavaScript typos: check method names exist (e.g. "getElementByID" → "getElementById")
+- Missing DOCTYPE declaration
+- Broken image/link paths (relative paths that reference missing protocol)
+- Uncaught null references: if querySelector might return null, add null checks
+- Missing 'use strict' in scripts that would benefit from it
+
+FIX STRATEGY:
+- For each bug found, fix it in place
+- Preserve all working code exactly as-is
+- Preserve comments, whitespace style, and naming conventions
+- If fixing a bug requires moving code, keep it minimal`,
+
+  comment: `You are a code documentation specialist. You receive a single HTML file.
+
+RULES — follow every one:
+1. Return ONLY the complete code with comments added. No markdown fences. No explanations.
+2. Do NOT modify any code logic or structure. Only add comments.
+3. Do NOT add comments to every line. Be selective and useful.
+
+WHERE TO ADD COMMENTS:
+- Before each <style> block: summarize what styles are defined
+- Before each <script> block: summarize what the script does
+- Before complex CSS selectors: explain what they target
+- Before JavaScript functions: describe purpose, parameters, return value
+- Before non-obvious logic: explain WHY, not WHAT
+- Before event listeners: describe the user interaction
+- At the top of the file: add a one-line description comment
+
+COMMENT STYLE:
+- HTML: <!-- Description -->
+- CSS: /* Description */
+- JavaScript: // Description (single line) or /** Description */ (multi-line for functions)
+- Keep comments concise: 1 line preferred, 2 max
+- Use present tense ("Handles click" not "This handles click")`,
+
+  format: `You are a code formatter. You receive a single HTML file.
+
+RULES — follow every one:
+1. Return ONLY the reformatted code. No markdown fences. No explanations.
+2. Do NOT change any logic, functionality, or behavior.
+3. Only change whitespace, indentation, and line breaks.
+
+FORMATTING RULES:
+- Use 2-space indentation (convert tabs to spaces)
+- One HTML attribute per line if element has 3+ attributes
+- Blank line between major sections (head/body, style blocks, script blocks)
+- CSS properties: one per line, alphabetical order within each rule
+- JavaScript: opening brace on same line as statement
+- Remove trailing whitespace on all lines
+- Ensure single newline at end of file
+- Remove consecutive blank lines (max 1 blank line between blocks)
+- Consistent quote style: double quotes for HTML attributes, single quotes for JS strings`
+};
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let state = {
+  currentSnippetId: null,
+  snippets: [],
+  undoStack: [],
+  redoStack: [],
+  maxUndo: 50,
+  connected: false,
+  modelId: 'mlx-community/Llama-3.2-3B-Instruct-4bit',
+  aiRunning: false,
+  previewMode: 'desktop',
+  theme: 'dark',
+  consoleOpen: false,
+  consoleEntries: [],
+  sessionTokens: { prompt: 0, completion: 0, calls: 0 },
+  settings: {
+    modelId: 'mlx-community/Llama-3.2-3B-Instruct-4bit',
+    systemPromptOverride: '',
+    maxTokens: 4096,
+    temperature: 0.3,
+  },
+};
+
+// ---------------------------------------------------------------------------
+// DOM references
+// ---------------------------------------------------------------------------
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+
+const editor = $('#editor');
+const lineNumbers = $('#line-numbers');
+const previewFrame = $('#preview-frame');
+const previewContainer = $('#preview-container');
+
+// ---------------------------------------------------------------------------
+// Initialization
+// ---------------------------------------------------------------------------
+function init() {
+  loadSettings();
+  loadSnippets();
+  loadTheme();
+
+  // If no snippets, create a default one
+  if (state.snippets.length === 0) {
+    createNewSnippet();
+  } else {
+    // Load last active or first snippet
+    const lastId = localStorage.getItem('snippets_active_id');
+    const snippet = state.snippets.find(s => s.id === lastId) || state.snippets[0];
+    loadSnippet(snippet.id);
+  }
+
+  // Show app, hide loading
+  $('#loading').style.display = 'none';
+  $('#app').style.display = 'flex';
+
+  setupEventListeners();
+  updateLineNumbers();
+  updatePreview();
+  checkConnection();
+  startAutoSave();
+}
+
+// ---------------------------------------------------------------------------
+// Settings persistence
+// ---------------------------------------------------------------------------
+function loadSettings() {
+  try {
+    const saved = localStorage.getItem('snippets_settings');
+    if (saved) {
+      state.settings = { ...state.settings, ...JSON.parse(saved) };
+    }
+    state.modelId = state.settings.modelId;
+  } catch (e) {}
+}
+
+function saveSettings() {
+  localStorage.setItem('snippets_settings', JSON.stringify(state.settings));
+}
+
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+function loadTheme() {
+  const saved = localStorage.getItem('snippets_theme') || 'dark';
+  state.theme = saved;
+  applyTheme();
+}
+
+function applyTheme() {
+  document.documentElement.classList.toggle('light', state.theme === 'light');
+  $('#btn-theme').textContent = state.theme === 'dark' ? '\u{1F319}' : '\u{2600}\u{FE0F}';
+}
+
+function toggleTheme() {
+  state.theme = state.theme === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('snippets_theme', state.theme);
+  applyTheme();
+}
+
+// ---------------------------------------------------------------------------
+// Snippet library
+// ---------------------------------------------------------------------------
+function loadSnippets() {
+  try {
+    const saved = localStorage.getItem('snippets_library');
+    if (saved) state.snippets = JSON.parse(saved);
+  } catch (e) {
+    state.snippets = [];
+  }
+}
+
+function saveSnippetsLibrary() {
+  localStorage.setItem('snippets_library', JSON.stringify(state.snippets));
+}
+
+function createNewSnippet() {
+  const snippet = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    title: 'Untitled Snippet',
+    content: '',
+    updatedAt: new Date().toISOString(),
+  };
+  state.snippets.unshift(snippet);
+  saveSnippetsLibrary();
+  loadSnippet(snippet.id);
+  renderLibrary();
+}
+
+function loadSnippet(id) {
+  const snippet = state.snippets.find(s => s.id === id);
+  if (!snippet) return;
+  state.currentSnippetId = id;
+  editor.value = snippet.content;
+  localStorage.setItem('snippets_active_id', id);
+  state.undoStack = [];
+  state.redoStack = [];
+  updateLineNumbers();
+  updatePreview();
+  renderLibrary();
+}
+
+function saveCurrentSnippet() {
+  const snippet = state.snippets.find(s => s.id === state.currentSnippetId);
+  if (!snippet) return;
+  snippet.content = editor.value;
+  snippet.updatedAt = new Date().toISOString();
+  // Auto-title from first meaningful content
+  if (snippet.title === 'Untitled Snippet' && editor.value.trim()) {
+    const titleMatch = editor.value.match(/<title>(.*?)<\/title>/i);
+    if (titleMatch) {
+      snippet.title = titleMatch[1].slice(0, 40);
+    } else {
+      const firstLine = editor.value.trim().split('\n')[0].slice(0, 40);
+      snippet.title = firstLine || 'Untitled Snippet';
+    }
+  }
+  saveSnippetsLibrary();
+  renderLibrary();
+}
+
+function deleteSnippet(id) {
+  state.snippets = state.snippets.filter(s => s.id !== id);
+  saveSnippetsLibrary();
+  if (state.currentSnippetId === id) {
+    if (state.snippets.length === 0) {
+      createNewSnippet();
+    } else {
+      loadSnippet(state.snippets[0].id);
+    }
+  }
+  renderLibrary();
+}
+
+function renderLibrary() {
+  const list = $('#library-list');
+  list.innerHTML = state.snippets.map(s => {
+    const active = s.id === state.currentSnippetId ? 'active' : '';
+    const date = new Date(s.updatedAt).toLocaleDateString();
+    return `<div class="library-item ${active}" data-id="${s.id}">
+      <span class="library-item-title">${escapeHtml(s.title)}</span>
+      <span class="library-item-date">${date}</span>
+      <button class="delete-btn" data-delete="${s.id}">&times;</button>
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('.library-item').forEach(item => {
+    item.addEventListener('click', (e) => {
+      if (e.target.dataset.delete) {
+        e.stopPropagation();
+        deleteSnippet(e.target.dataset.delete);
+        return;
+      }
+      saveCurrentSnippet();
+      loadSnippet(item.dataset.id);
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Editor
+// ---------------------------------------------------------------------------
+function updateLineNumbers() {
+  const lines = editor.value.split('\n').length;
+  const nums = [];
+  for (let i = 1; i <= lines; i++) nums.push(i);
+  lineNumbers.textContent = nums.join('\n');
+}
+
+function pushUndo() {
+  state.undoStack.push(editor.value);
+  if (state.undoStack.length > state.maxUndo) state.undoStack.shift();
+  state.redoStack = [];
+}
+
+function undo() {
+  if (state.undoStack.length === 0) return;
+  state.redoStack.push(editor.value);
+  editor.value = state.undoStack.pop();
+  updateLineNumbers();
+  updatePreview();
+}
+
+function redo() {
+  if (state.redoStack.length === 0) return;
+  state.undoStack.push(editor.value);
+  editor.value = state.redoStack.pop();
+  updateLineNumbers();
+  updatePreview();
+}
+
+// ---------------------------------------------------------------------------
+// Preview
+// ---------------------------------------------------------------------------
+let previewTimeout = null;
+function updatePreview() {
+  clearTimeout(previewTimeout);
+  previewTimeout = setTimeout(() => {
+    const code = editor.value;
+    // Inject console interceptor
+    const consoleScript = `<script>
+      (function() {
+        const origLog = console.log;
+        const origWarn = console.warn;
+        const origError = console.error;
+        function send(type, args) {
+          try {
+            parent.postMessage({type:'console', level:type, data:Array.from(args).map(String).join(' ')}, '*');
+          } catch(e) {}
+        }
+        console.log = function() { send('log', arguments); origLog.apply(console, arguments); };
+        console.warn = function() { send('warn', arguments); origWarn.apply(console, arguments); };
+        console.error = function() { send('error', arguments); origError.apply(console, arguments); };
+        window.onerror = function(msg, src, line, col, err) {
+          send('error', [msg + ' (line ' + line + ')']);
+        };
+      })();
+    <\/script>`;
+
+    // Inject viewport meta if not present
+    let html = code;
+    if (!/<meta[^>]*viewport/i.test(html)) {
+      const viewportMeta = '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+      if (/<head/i.test(html)) {
+        html = html.replace(/<head([^>]*)>/i, `<head$1>${viewportMeta}`);
+      } else if (/<!doctype/i.test(html) || /<html/i.test(html)) {
+        html = html.replace(/(<html[^>]*>)/i, `$1<head>${viewportMeta}</head>`);
+      } else {
+        html = viewportMeta + html;
+      }
+    }
+
+    // Inject console script at end
+    if (/<\/body>/i.test(html)) {
+      html = html.replace(/<\/body>/i, consoleScript + '</body>');
+    } else {
+      html = html + consoleScript;
+    }
+
+    previewFrame.srcdoc = html;
+  }, 300);
+}
+
+function setPreviewMode(mode) {
+  state.previewMode = mode;
+  $$('.preview-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+
+  const container = previewContainer;
+  const frame = previewFrame;
+
+  switch (mode) {
+    case 'portrait':
+      frame.style.width = '375px';
+      frame.style.height = '667px';
+      break;
+    case 'landscape':
+      frame.style.width = '667px';
+      frame.style.height = '375px';
+      break;
+    case 'desktop':
+      frame.style.width = '100%';
+      frame.style.height = '100%';
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Console
+// ---------------------------------------------------------------------------
+function addConsoleEntry(level, data) {
+  state.consoleEntries.push({ level, data, time: new Date() });
+  $('#console-count').textContent = state.consoleEntries.length;
+  if (state.consoleOpen) renderConsole();
+}
+
+function renderConsole() {
+  const body = $('#console-body');
+  body.innerHTML = state.consoleEntries.map(e =>
+    `<div class="console-entry ${e.level}">${escapeHtml(e.data)}</div>`
+  ).join('');
+  body.scrollTop = body.scrollHeight;
+}
+
+function clearConsole() {
+  state.consoleEntries = [];
+  $('#console-count').textContent = '0';
+  $('#console-body').innerHTML = '';
+}
+
+function toggleConsole() {
+  state.consoleOpen = !state.consoleOpen;
+  $('#console-panel').style.display = state.consoleOpen ? 'block' : 'none';
+  if (state.consoleOpen) renderConsole();
+}
+
+// ---------------------------------------------------------------------------
+// Connection check
+// ---------------------------------------------------------------------------
+async function checkConnection() {
+  try {
+    const resp = await fetch('/api/model-status');
+    const data = await resp.json();
+    state.connected = data.status === 'downloaded';
+    state.modelId = data.model_id;
+    updateConnectionUI(data);
+  } catch (e) {
+    state.connected = false;
+    updateConnectionUI({ status: 'disconnected' });
+  }
+}
+
+function updateConnectionUI(data) {
+  const dot = $('#status-dot');
+  const text = $('#status-text');
+  const settingsDot = $('#settings-status-dot');
+  const settingsText = $('#settings-status-text');
+
+  if (state.connected) {
+    dot.className = 'status-dot connected';
+    text.textContent = 'Connected';
+    if (settingsDot) settingsDot.className = 'status-dot connected';
+    if (settingsText) settingsText.textContent = `Connected — ${state.modelId}`;
+    enableAIButtons(true);
+  } else {
+    dot.className = 'status-dot';
+    text.textContent = data.status === 'downloading' ? 'Downloading model...' : 'Disconnected';
+    if (settingsDot) settingsDot.className = data.status === 'downloading' ? 'status-dot loading' : 'status-dot';
+    if (settingsText) settingsText.textContent = data.status === 'downloading' ? 'Downloading...' : 'Disconnected — start snippets-launcher.py';
+    enableAIButtons(false);
+  }
+}
+
+function enableAIButtons(enabled) {
+  const btns = ['#btn-optimize', '#btn-fix', '#btn-comment', '#btn-format'];
+  btns.forEach(id => {
+    const btn = $(id);
+    if (btn) btn.disabled = !enabled || state.aiRunning;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// AI dispatch
+// ---------------------------------------------------------------------------
+async function callModel(systemPrompt, userContent) {
+  if (state.aiRunning) return null;
+  state.aiRunning = true;
+  enableAIButtons(false);
+  $('#ai-spinner').classList.add('active');
+
+  const messages = [
+    { role: 'system', content: state.settings.systemPromptOverride || systemPrompt },
+    { role: 'user', content: userContent },
+  ];
+
+  try {
+    const resp = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: state.modelId,
+        messages,
+        temperature: state.settings.temperature,
+        max_tokens: state.settings.maxTokens,
+        stream: true,
+      }),
+      signal: AbortSignal.timeout(120000),
+    });
+
+    if (!resp.ok) {
+      throw new Error(`Server error: ${resp.status}`);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let result = '';
+    let usage = { prompt_tokens: 0, completion_tokens: 0 };
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data: ')) continue;
+        const data = trimmed.slice(6);
+        if (data === '[DONE]') continue;
+
+        try {
+          const parsed = JSON.parse(data);
+          const delta = parsed.choices?.[0]?.delta?.content;
+          if (delta) {
+            result += delta;
+            // Live update the editor during streaming
+            editor.value = result;
+            updateLineNumbers();
+          }
+          if (parsed.usage) {
+            usage = parsed.usage;
+          }
+        } catch (e) {
+          // Skip malformed chunks
+        }
+      }
+    }
+
+    // Update token tracking
+    state.sessionTokens.prompt += usage.prompt_tokens;
+    state.sessionTokens.completion += usage.completion_tokens;
+    state.sessionTokens.calls += 1;
+    updateTokenBadge(usage);
+
+    return { text: result, usage };
+  } catch (e) {
+    alert(`AI Error: ${e.message}`);
+    return null;
+  } finally {
+    state.aiRunning = false;
+    enableAIButtons(state.connected);
+    $('#ai-spinner').classList.remove('active');
+  }
+}
+
+function updateTokenBadge(lastUsage) {
+  const badge = $('#token-badge');
+  badge.classList.add('visible');
+  $('#token-last').textContent = `${lastUsage.prompt_tokens}\u2192${lastUsage.completion_tokens} tokens`;
+  $('#token-session').textContent = `Session: ${state.sessionTokens.prompt + state.sessionTokens.completion} tokens, ${state.sessionTokens.calls} calls`;
+}
+
+// AI command handlers
+async function runOptimize() {
+  pushUndo();
+  await callModel(SYSTEM_PROMPTS.optimize, editor.value);
+  updatePreview();
+  saveCurrentSnippet();
+}
+
+async function runFixBugs() {
+  pushUndo();
+  await callModel(SYSTEM_PROMPTS.fix, editor.value);
+  updatePreview();
+  saveCurrentSnippet();
+}
+
+async function runComment() {
+  pushUndo();
+  await callModel(SYSTEM_PROMPTS.comment, editor.value);
+  updatePreview();
+  saveCurrentSnippet();
+}
+
+async function runFormat(framework) {
+  pushUndo();
+  let prompt = SYSTEM_PROMPTS.format;
+  if (framework && framework !== 'vanilla') {
+    prompt += `\n\nFRAMEWORK HINT: This code uses ${framework}. Apply ${framework}-specific formatting conventions where applicable.`;
+  }
+  await callModel(prompt, editor.value);
+  updatePreview();
+  saveCurrentSnippet();
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+function downloadHTML() {
+  const blob = new Blob([editor.value], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const snippet = state.snippets.find(s => s.id === state.currentSnippetId);
+  a.download = (snippet?.title || 'snippet') + '.html';
+  a.href = url;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function copyToClipboard() {
+  try {
+    await navigator.clipboard.writeText(editor.value);
+    const btn = $('#export-clipboard');
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = orig, 1500);
+  } catch (e) {
+    alert('Failed to copy to clipboard');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Resize handle
+// ---------------------------------------------------------------------------
+function setupResize() {
+  const handle = $('#resize-handle');
+  const editorPane = document.querySelector('.editor-pane');
+  const previewPane = document.querySelector('.preview-pane');
+  let startX, startWidth;
+
+  handle.addEventListener('mousedown', (e) => {
+    startX = e.clientX;
+    startWidth = editorPane.getBoundingClientRect().width;
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+    e.preventDefault();
+  });
+
+  function onMouseMove(e) {
+    const diff = e.clientX - startX;
+    const newWidth = startWidth + diff;
+    const totalWidth = editorPane.parentElement.getBoundingClientRect().width;
+    const pct = (newWidth / totalWidth) * 100;
+    if (pct > 20 && pct < 80) {
+      editorPane.style.flex = `0 0 ${pct}%`;
+      previewPane.style.flex = '1';
+    }
+  }
+
+  function onMouseUp() {
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup', onMouseUp);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Settings panel
+// ---------------------------------------------------------------------------
+function openSettings() {
+  const overlay = $('#settings-overlay');
+  overlay.classList.add('open');
+  $('#settings-model').value = state.settings.modelId;
+  $('#settings-system-prompt').value = state.settings.systemPromptOverride;
+  $('#settings-max-tokens').value = state.settings.maxTokens;
+  $('#settings-temperature').value = state.settings.temperature;
+  $('#temp-value').textContent = state.settings.temperature;
+  checkConnection(); // Refresh status
+}
+
+function closeSettings() {
+  $('#settings-overlay').classList.remove('open');
+}
+
+function applySettings() {
+  state.settings.modelId = $('#settings-model').value.trim();
+  state.settings.systemPromptOverride = $('#settings-system-prompt').value.trim();
+  state.settings.maxTokens = parseInt($('#settings-max-tokens').value) || 4096;
+  state.settings.temperature = parseFloat($('#settings-temperature').value) || 0.3;
+  state.modelId = state.settings.modelId;
+  saveSettings();
+  closeSettings();
+}
+
+async function downloadModel() {
+  const modelId = $('#settings-model').value.trim();
+  if (!modelId) return;
+  const progress = $('#download-progress');
+  const progressFill = $('#progress-fill');
+  const status = $('#download-status');
+  progress.style.display = 'block';
+  status.textContent = 'Starting download...';
+  progressFill.style.width = '10%';
+
+  try {
+    const resp = await fetch('/api/download-model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: modelId }),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value);
+      const lines = text.split('\n');
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.status === 'downloaded') {
+              progressFill.style.width = '100%';
+              status.textContent = 'Download complete!';
+              checkConnection();
+            } else if (data.status === 'error') {
+              status.textContent = `Error: ${data.error}`;
+              progressFill.style.width = '0%';
+            }
+          } catch (e) {}
+        }
+      }
+    }
+  } catch (e) {
+    status.textContent = `Error: ${e.message}`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-save
+// ---------------------------------------------------------------------------
+function startAutoSave() {
+  setInterval(() => {
+    saveCurrentSnippet();
+  }, 2000);
+}
+
+// ---------------------------------------------------------------------------
+// Utility
+// ---------------------------------------------------------------------------
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ---------------------------------------------------------------------------
+// Event listeners
+// ---------------------------------------------------------------------------
+function setupEventListeners() {
+  // Editor input
+  let inputTimeout;
+  editor.addEventListener('input', () => {
+    updateLineNumbers();
+    clearTimeout(inputTimeout);
+    inputTimeout = setTimeout(() => updatePreview(), 300);
+  });
+
+  // Sync scroll for line numbers
+  editor.addEventListener('scroll', () => {
+    lineNumbers.style.transform = `translateY(-${editor.scrollTop}px)`;
+  });
+
+  // Tab key inserts spaces
+  editor.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = editor.selectionStart;
+      const end = editor.selectionEnd;
+      pushUndo();
+      editor.value = editor.value.substring(0, start) + '  ' + editor.value.substring(end);
+      editor.selectionStart = editor.selectionEnd = start + 2;
+      updateLineNumbers();
+    }
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+    if (mod && e.key === 'z' && e.shiftKey) { e.preventDefault(); redo(); }
+    if (mod && e.key === 'Z') { e.preventDefault(); redo(); }
+    if (mod && e.key === 's') { e.preventDefault(); saveCurrentSnippet(); }
+  });
+
+  // Record undo on pause in typing
+  let undoTimeout;
+  editor.addEventListener('input', () => {
+    clearTimeout(undoTimeout);
+    undoTimeout = setTimeout(() => pushUndo(), 500);
+  });
+
+  // Toolbar buttons
+  $('#btn-library').addEventListener('click', () => {
+    const sidebar = $('#library-sidebar');
+    sidebar.classList.toggle('open');
+    renderLibrary();
+  });
+  $('#btn-library-close').addEventListener('click', () => {
+    $('#library-sidebar').classList.remove('open');
+  });
+  $('#btn-new').addEventListener('click', () => {
+    saveCurrentSnippet();
+    createNewSnippet();
+  });
+
+  // AI buttons
+  $('#btn-optimize').addEventListener('click', runOptimize);
+  $('#btn-fix').addEventListener('click', runFixBugs);
+  $('#btn-comment').addEventListener('click', runComment);
+
+  // Format with dropdown
+  $('#btn-format').addEventListener('click', () => {
+    if ($('#btn-format').disabled) return;
+    $('#format-menu').classList.toggle('open');
+  });
+  $$('#format-menu .dropdown-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      $('#format-menu').classList.remove('open');
+      runFormat(btn.dataset.framework);
+    });
+  });
+
+  // Preview modes
+  $$('.preview-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => setPreviewMode(btn.dataset.mode));
+  });
+
+  // Console
+  window.addEventListener('message', (e) => {
+    if (e.data?.type === 'console') {
+      addConsoleEntry(e.data.level, e.data.data);
+    }
+  });
+  $('#btn-console').addEventListener('click', toggleConsole);
+  $('#btn-clear-console').addEventListener('click', clearConsole);
+
+  // Export
+  $('#btn-export').addEventListener('click', () => {
+    $('#export-menu').classList.toggle('open');
+  });
+  $('#export-html').addEventListener('click', () => {
+    downloadHTML();
+    $('#export-menu').classList.remove('open');
+  });
+  $('#export-clipboard').addEventListener('click', () => {
+    copyToClipboard();
+    $('#export-menu').classList.remove('open');
+  });
+
+  // Close dropdowns on outside click
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.dropdown')) {
+      $('#export-menu').classList.remove('open');
+    }
+    if (!e.target.closest('.format-dropdown')) {
+      $('#format-menu').classList.remove('open');
+    }
+    if (!e.target.closest('.help-tooltip') && !e.target.closest('#btn-help')) {
+      $('#help-tooltip').classList.remove('open');
+    }
+  });
+
+  // Theme
+  $('#btn-theme').addEventListener('click', toggleTheme);
+
+  // Help
+  $('#btn-help').addEventListener('click', () => {
+    $('#help-tooltip').classList.toggle('open');
+  });
+
+  // Settings
+  $('#btn-settings').addEventListener('click', openSettings);
+  $('#btn-settings-cancel').addEventListener('click', closeSettings);
+  $('#btn-settings-save').addEventListener('click', applySettings);
+  $('#settings-overlay').addEventListener('click', (e) => {
+    if (e.target === $('#settings-overlay')) closeSettings();
+  });
+  $('#settings-temperature').addEventListener('input', (e) => {
+    $('#temp-value').textContent = e.target.value;
+  });
+  $('#btn-download-model').addEventListener('click', downloadModel);
+
+  // Resize
+  setupResize();
+
+  // Set initial preview mode
+  setPreviewMode('desktop');
+}
+
+// Start
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
