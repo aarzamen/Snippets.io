@@ -30,11 +30,12 @@ HTML_FILE = "snippets-local.html"
 # ---------------------------------------------------------------------------
 
 def check_package(pkg: str) -> bool:
-    try:
-        __import__(pkg)
-        return True
-    except ImportError:
-        return False
+    """Check if a package is installed (via importlib.metadata to avoid import side-effects)."""
+    from importlib.metadata import distributions
+    # Normalize: both underscore and hyphen variants
+    normalized = pkg.lower().replace("-", "_")
+    installed = {d.metadata["Name"].lower().replace("-", "_") for d in distributions()}
+    return normalized in installed
 
 
 def install_packages(packages: list[str]) -> None:
