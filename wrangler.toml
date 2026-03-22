@@ -1,0 +1,7 @@
+name = "snippets-io"
+compatibility_date = "2024-09-23"
+pages_build_output_dir = "dist"
+
+[vars]
+# Set your Gemini API key in Cloudflare Pages dashboard > Settings > Environment Variables
+# GEMINI_API_KEY = ""

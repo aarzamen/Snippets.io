@@ -26,26 +26,95 @@ interface CumulativeUsage {
   callCount: number;
 }
 
-// ─── API Key Management ──────────────────────────────────────────────
-function getApiKey(): string | null {
-  // 1. Build-time env var (injected by Vite from Cloud Run / AI Studio secrets)
-  const envKey = process.env.GEMINI_API_KEY;
-  if (envKey && envKey !== 'MY_GEMINI_API_KEY' && envKey.length > 10) {
-    return envKey;
-  }
-  // 2. User-provided key in localStorage
-  const stored = localStorage.getItem('gemini_api_key');
-  if (stored && stored.length > 10) {
-    return stored;
-  }
-  return null;
+// ─── API Key Management (encrypted localStorage) ────────────────────
+// Uses SubtleCrypto AES-GCM with a device-derived key so the raw API key
+// is never stored as plaintext. The encryption key is derived from a
+// stable device fingerprint via PBKDF2, making it non-transferable and
+// opaque to casual inspection of localStorage / DevTools.
+
+const STORAGE_KEY = 'gemini_api_key_enc';
+const SALT_KEY = 'gemini_api_key_salt';
+
+async function deriveEncryptionKey(salt: Uint8Array): Promise<CryptoKey> {
+  // Use a stable device fingerprint as the passphrase — not perfect security
+  // (it's client-side after all) but prevents plaintext exposure in localStorage
+  const fingerprint = `snippets.io:${navigator.userAgent}:${screen.width}x${screen.height}`;
+  const raw = new TextEncoder().encode(fingerprint);
+  const baseKey = await crypto.subtle.importKey('raw', raw, 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
 }
 
-function setStoredApiKey(key: string) {
-  localStorage.setItem('gemini_api_key', key);
+async function encryptAndStore(plainKey: string): Promise<void> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encKey = await deriveEncryptionKey(salt);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    encKey,
+    new TextEncoder().encode(plainKey)
+  );
+  // Store salt, iv, and ciphertext as base64
+  const payload = JSON.stringify({
+    s: btoa(String.fromCharCode(...salt)),
+    iv: btoa(String.fromCharCode(...iv)),
+    ct: btoa(String.fromCharCode(...new Uint8Array(ciphertext))),
+  });
+  localStorage.setItem(STORAGE_KEY, payload);
+  // Remove any legacy plaintext key
+  localStorage.removeItem('gemini_api_key');
+}
+
+async function decryptStored(): Promise<string | null> {
+  // Migrate legacy plaintext key if present
+  const legacy = localStorage.getItem('gemini_api_key');
+  if (legacy && legacy.length > 10) {
+    await encryptAndStore(legacy);
+    localStorage.removeItem('gemini_api_key');
+  }
+
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const { s, iv, ct } = JSON.parse(raw);
+    const salt = Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    const ivBytes = Uint8Array.from(atob(iv), c => c.charCodeAt(0));
+    const ciphertext = Uint8Array.from(atob(ct), c => c.charCodeAt(0));
+    const encKey = await deriveEncryptionKey(salt);
+    const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivBytes }, encKey, ciphertext);
+    return new TextDecoder().decode(plainBuf);
+  } catch {
+    return null;
+  }
+}
+
+function getApiKeySync(): string | null {
+  // Fast synchronous check — env var only (used for initial render state)
+  const envKey = process.env.GEMINI_API_KEY;
+  if (envKey && envKey !== 'MY_GEMINI_API_KEY' && envKey.length > 10) return envKey;
+  // Check for presence of encrypted key (can't decrypt synchronously)
+  return localStorage.getItem(STORAGE_KEY) ? '__encrypted_present__' : null;
+}
+
+async function getApiKey(): Promise<string | null> {
+  // 1. Build-time env var
+  const envKey = process.env.GEMINI_API_KEY;
+  if (envKey && envKey !== 'MY_GEMINI_API_KEY' && envKey.length > 10) return envKey;
+  // 2. Encrypted user-provided key
+  return decryptStored();
+}
+
+async function setStoredApiKey(key: string) {
+  await encryptAndStore(key);
 }
 
 function clearStoredApiKey() {
+  localStorage.removeItem(STORAGE_KEY);
   localStorage.removeItem('gemini_api_key');
 }
 
@@ -121,7 +190,7 @@ function TokenBadge({ lastUsage, cumulative }: { lastUsage: TokenUsage | null; c
 // ─── API Key Modal ───────────────────────────────────────────────────
 function ApiKeyModal({ isOpen, onClose, onSave }: { isOpen: boolean; onClose: () => void; onSave: (key: string) => void }) {
   const [keyInput, setKeyInput] = useState('');
-  const hasExisting = !!localStorage.getItem('gemini_api_key');
+  const hasExisting = !!(localStorage.getItem(STORAGE_KEY) || localStorage.getItem('gemini_api_key'));
 
   if (!isOpen) return null;
 
@@ -308,11 +377,11 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
   // Auto-title generation
   useEffect(() => {
     if (!debouncedContent.trim() || isManuallyEditedTitle || snippetToEdit) return;
-    const apiKey = getApiKey();
-    if (!apiKey) return;
 
     let isMounted = true;
     const generateTitle = async () => {
+      const apiKey = await getApiKey();
+      if (!apiKey || !isMounted) return;
       setIsGeneratingTitle(true);
       try {
         const ai = new GoogleGenAI({ apiKey });
@@ -321,7 +390,6 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
         if (isMounted && response.text) {
           setTitle(response.text.trim().replace(/^["']|["']$/g, ''));
         }
-        // Track token usage from response
         if (response.usageMetadata) {
           onTokenUsage({
             promptTokens: response.usageMetadata.promptTokenCount || 0,
@@ -332,7 +400,8 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
           });
         }
       } catch (error: any) {
-        console.error('Title generation failed:', error);
+        // Silently skip — title generation is non-critical
+        console.debug('Title generation skipped:', error?.message);
       } finally {
         if (isMounted) setIsGeneratingTitle(false);
       }
@@ -343,7 +412,7 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
 
   const handleAiAction = async (action: 'optimize' | 'fix' | 'comments' | 'format', framework?: string) => {
     if (!content.trim()) return;
-    const apiKey = getApiKey();
+    const apiKey = await getApiKey();
     if (!apiKey) {
       onRequestApiKey();
       return;
@@ -353,18 +422,91 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
     setAiError(null);
     try {
       const ai = new GoogleGenAI({ apiKey });
+      // Structured prompts designed to work reliably with both state-of-the-art
+      // and mid-tier models (e.g. via OpenRouter). Each prompt:
+      // 1. States the EXACT task with concrete examples of what to look for
+      // 2. Specifies output format constraints (raw code, no markdown)
+      // 3. Includes guardrails against common model failure modes
+      const PREAMBLE = `You are a code assistant. You MUST return ONLY the modified code — no explanations, no markdown fences (\`\`\`), no commentary before or after. Output the complete file exactly as it should appear.`;
       let prompt = '';
       if (action === 'optimize') {
-        prompt = `Optimize the following web code for performance, readability, and best practices. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+        prompt = `${PREAMBLE}
+
+TASK: Optimize this web code. Specifically:
+- Remove redundant DOM queries and cache element references
+- Replace inefficient selectors (e.g. universal *, deep nesting)
+- Debounce or throttle event handlers that fire rapidly (scroll, resize, input)
+- Use CSS transforms/opacity for animations instead of layout-triggering properties
+- Replace inline styles with CSS classes where repeated
+- Use semantic HTML elements (nav, main, section, article) where appropriate
+- Minimize reflows: batch DOM reads and writes separately
+- Use const/let instead of var; prefer template literals over string concatenation
+- Remove dead code and unused variables
+Do NOT change the visible behavior or appearance. Preserve all functionality.
+
+CODE:
+${content}`;
       } else if (action === 'fix') {
-        prompt = `Fix any bugs, syntax errors, or logical issues in the following web code. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+        prompt = `${PREAMBLE}
+
+TASK: Fix bugs in this web code. Check for and fix ALL of the following:
+- Unclosed HTML tags (div, span, p, ul, li, table, etc.) — close them
+- Missing closing brackets, braces, or parentheses in JS/CSS
+- Mismatched quotes (single/double) in attributes and strings
+- Broken attribute syntax (missing =, missing quotes around values)
+- Invalid CSS (missing semicolons, unclosed rules, typos in property names)
+- JS errors: undefined variables, missing function arguments, wrong method names
+- Event listeners referencing elements that don't exist (wrong IDs/classes)
+- Missing DOCTYPE, html, head, or body tags if partial HTML
+- Broken links or src attributes pointing to obviously wrong paths
+Fix each issue. Do NOT add new features or change the design. Only fix what is broken.
+
+CODE:
+${content}`;
       } else if (action === 'comments') {
-        prompt = `Add helpful, concise comments explaining the following web code. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+        prompt = `${PREAMBLE}
+
+TASK: Add inline comments to explain this web code. Guidelines:
+- Add a comment above each function explaining what it does and its parameters
+- Add comments for non-obvious logic (regex patterns, bitwise ops, complex conditions)
+- Label major HTML sections (header, navigation, main content, sidebar, footer)
+- Explain CSS tricks (flexbox patterns, grid layouts, z-index stacking, animations)
+- Note any browser compatibility considerations
+- Keep comments concise — one line preferred, two lines maximum
+- Do NOT add comments for self-explanatory code (variable declarations, simple assignments)
+- Use // for JS, <!-- --> for HTML, /* */ for CSS
+
+CODE:
+${content}`;
       } else if (action === 'format') {
         if (framework) {
-          prompt = `Format the following web code with proper indentation. Enhance its UI using ${framework} classes and best practices for a modern, responsive look. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+          prompt = `${PREAMBLE}
+
+TASK: Format and enhance this web code using ${framework}. Specifically:
+- Apply consistent 2-space indentation throughout
+- Add ${framework} utility classes for layout, spacing, typography, and colors
+- Make the layout responsive (mobile-first, breakpoints for tablet and desktop)
+- Ensure proper ${framework} CDN link is included in <head> if not present
+- Use ${framework} component patterns (cards, buttons, grids, navbars) where appropriate
+- Preserve ALL existing content, text, and functionality — only enhance styling
+- Remove conflicting inline styles that ${framework} classes replace
+
+CODE:
+${content}`;
         } else {
-          prompt = `Format the following web code with proper indentation and consistent style. Improve CSS for a modern, clean look. Return ONLY the raw code, no markdown formatting. Code:\n\n${content}`;
+          prompt = `${PREAMBLE}
+
+TASK: Format this web code with clean, consistent styling:
+- Apply consistent 2-space indentation for all HTML, CSS, and JS
+- Normalize attribute quoting (use double quotes consistently)
+- Sort CSS properties in logical groups (layout → box model → typography → visual)
+- Add reasonable spacing between logical sections
+- Ensure responsive design basics: viewport meta, relative units, flexible layouts
+- Apply modern CSS defaults: box-sizing border-box, system font stack, sensible resets
+- Preserve ALL existing content and functionality — only improve formatting and style
+
+CODE:
+${content}`;
         }
       }
 
@@ -400,15 +542,19 @@ function PasteScreen({ snippetToEdit, onPreview, onSave, onUpdate, onAutoSave, o
         setDebouncedContent(newContent);
       }
     } catch (error: any) {
-      console.error('AI action failed:', error);
+      console.debug('AI action failed:', error);
       const msg = error?.message || String(error);
       if (msg.includes('API key') || msg.includes('401') || msg.includes('403')) {
-        setAiError('Invalid API key. Check settings.');
+        setAiError('API key invalid or expired — update in Settings.');
       } else if (msg.includes('429') || msg.includes('quota')) {
-        setAiError('Rate limited. Try again shortly.');
+        setAiError('Rate limited — try again in a moment.');
+      } else if (msg.includes('network') || msg.includes('fetch') || msg.includes('Failed to fetch')) {
+        setAiError('Network error — check your connection.');
       } else {
-        setAiError('AI request failed. Check your API key.');
+        setAiError('AI unavailable — app works fine without it.');
       }
+      // Auto-dismiss after 5 seconds
+      setTimeout(() => setAiError(null), 5000);
     } finally {
       setIsAiProcessing(false);
       setAiAction(null);
@@ -877,7 +1023,12 @@ export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
-  const [apiKeyAvailable, setApiKeyAvailable] = useState(!!getApiKey());
+  const [apiKeyAvailable, setApiKeyAvailable] = useState(!!getApiKeySync());
+
+  // Resolve encrypted key availability on mount
+  useEffect(() => {
+    getApiKey().then(k => setApiKeyAvailable(!!k));
+  }, []);
 
   // Token usage tracking
   const [lastTokenUsage, setLastTokenUsage] = useState<TokenUsage | null>(null);
@@ -989,6 +1140,11 @@ export default function App() {
     iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:390px;height:844px;opacity:0';
     iframe.sandbox = 'allow-scripts allow-same-origin' as any;
 
+    // iPhone aspect ratio: 390x844 (logical), captured at 2x scale
+    const PAGE_W = 390;
+    const PAGE_H = 844;
+    const SCALE = 2;
+
     const captureScript = `
       <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
       <script>
@@ -998,8 +1154,24 @@ export default function App() {
               const h = Math.max(document.body.scrollHeight, document.body.offsetHeight, document.documentElement.clientHeight, document.documentElement.scrollHeight, document.documentElement.offsetHeight);
               window.parent.postMessage({ type: 'RESIZE', height: h }, '*');
               setTimeout(async () => {
-                const canvas = await html2canvas(document.body, { useCORS: true, scale: 2, windowWidth: 390, windowHeight: h, backgroundColor: '#ffffff' });
-                window.parent.postMessage({ type: 'CAPTURED', imgData: canvas.toDataURL('image/jpeg', 0.8), height: h }, '*');
+                const canvas = await html2canvas(document.body, { useCORS: true, scale: ${SCALE}, windowWidth: ${PAGE_W}, windowHeight: h, backgroundColor: '#ffffff' });
+                // Send individual page slices for reliable multi-page PDF
+                const pageH = ${PAGE_H} * ${SCALE};
+                const pageW = ${PAGE_W} * ${SCALE};
+                const totalPages = Math.max(1, Math.ceil(canvas.height / pageH));
+                const pages = [];
+                for (let i = 0; i < totalPages; i++) {
+                  const sliceH = Math.min(pageH, canvas.height - i * pageH);
+                  const pageCanvas = document.createElement('canvas');
+                  pageCanvas.width = pageW;
+                  pageCanvas.height = pageH; // always full page height for consistent PDF pages
+                  const ctx = pageCanvas.getContext('2d');
+                  ctx.fillStyle = '#ffffff';
+                  ctx.fillRect(0, 0, pageW, pageH);
+                  ctx.drawImage(canvas, 0, i * pageH, pageW, sliceH, 0, 0, pageW, sliceH);
+                  pages.push(pageCanvas.toDataURL('image/jpeg', 0.85));
+                }
+                window.parent.postMessage({ type: 'CAPTURED', pages: pages, fullImage: canvas.toDataURL('image/jpeg', 0.8), height: h }, '*');
               }, 500);
             } catch (e) { window.parent.postMessage({ type: 'ERROR', error: e.message }, '*'); }
           }, 1000);
@@ -1015,33 +1187,34 @@ export default function App() {
         window.removeEventListener('message', listener);
         document.body.removeChild(iframe);
         setExporting(null);
-        const { imgData, height } = e.data;
+        const { pages, fullImage } = e.data;
         if (type === 'image') {
-          const a = document.createElement('a'); a.href = imgData; a.download = `${snippet.title || 'snippet'}.jpg`; a.click();
+          const a = document.createElement('a'); a.href = fullImage; a.download = `${snippet.title || 'snippet'}.jpg`; a.click();
         } else if (type === 'pdf') {
           try {
-            const pdf = new jsPDF({ orientation: 'portrait', unit: 'px', format: [390, 844] });
-            let left = height; let page = 0;
-            pdf.addImage(imgData, 'JPEG', 0, 0, 390, height);
-            left -= 844;
-            while (left > 0) { page++; pdf.addPage([390, 844], 'portrait'); pdf.addImage(imgData, 'JPEG', 0, -(844 * page), 390, height); left -= 844; }
+            const pdf = new jsPDF({ orientation: 'portrait', unit: 'px', format: [PAGE_W, PAGE_H] });
+            for (let i = 0; i < pages.length; i++) {
+              if (i > 0) pdf.addPage([PAGE_W, PAGE_H], 'portrait');
+              pdf.addImage(pages[i], 'JPEG', 0, 0, PAGE_W, PAGE_H);
+            }
             pdf.save(`${snippet.title || 'snippet'}.pdf`);
-          } catch (err: any) { console.error('PDF error:', err); }
+          } catch (err: any) { console.error('PDF error:', err); showToast('PDF export failed'); }
         }
       } else if (e.data.type === 'ERROR') {
         window.removeEventListener('message', listener);
         document.body.removeChild(iframe);
         setExporting(null);
+        showToast('Export failed');
       }
     };
     window.addEventListener('message', listener);
   };
 
-  const handleApiKeySave = (key: string) => {
-    setStoredApiKey(key);
+  const handleApiKeySave = async (key: string) => {
+    await setStoredApiKey(key);
     setApiKeyAvailable(true);
     setShowApiKeyModal(false);
-    showToast('API key saved');
+    showToast('API key saved (encrypted)');
   };
 
   return (
