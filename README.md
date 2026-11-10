@@ -75,4 +75,10 @@ public/
 
 ## License
 
-MIT
+Snippets.io is released under the [MIT License](LICENSE). Copyright (c) 2026 Aaron Arzamendi.
+
+Third-party terms:
+
+- npm dependencies are under permissive licences (MIT, Apache-2.0, ISC, BSD). Two exceptions live in the build toolchain and are not shipped in the app bundle: `lightningcss` (MPL-2.0, pulled in by Vite and Tailwind CSS 4) and `caniuse-lite` (CC-BY-4.0 browser data, via Browserslist). `dompurify`, an optional dependency of jsPDF, is dual-licensed MPL-2.0 OR Apache-2.0.
+- html2canvas (MIT) is loaded from cdnjs at runtime for image and PDF export. `snippets-local.html` also loads PrismJS (MIT) from cdnjs.
+- `snippets-launcher.py` depends on mlx-lm (MIT), aiohttp (Apache-2.0), and huggingface-hub (Apache-2.0), and downloads `mlx-community/Llama-3.2-3B-Instruct-4bit` by default. Those model weights are governed by Meta's Llama 3.2 Community License, not by this repository's MIT licence.
